@@ -95,7 +95,7 @@ export class NostrRelay {
           values: [{
             id: event.id,
             pubkey: event.pubkey,
-            created_at: new Date(event.created_at * 1000),
+            created_at: event.created_at,
             kind: event.kind,
             tags: event.tags,
             content: event.content,
@@ -239,13 +239,13 @@ export class NostrRelay {
     }
 
     if (filter.since) {
-      conditions.push(`created_at >= {since:DateTime64(3)}`);
-      params.since = new Date(filter.since * 1000);
+      conditions.push(`created_at >= {since:UInt32}`);
+      params.since = filter.since;
     }
 
     if (filter.until) {
-      conditions.push(`created_at <= {until:DateTime64(3)}`);
-      params.until = new Date(filter.until * 1000);
+      conditions.push(`created_at <= {until:UInt32}`);
+      params.until = filter.until;
     }
 
     // Handle tag filters (#e, #p, etc.)
@@ -273,7 +273,7 @@ export class NostrRelay {
       SELECT
         id,
         pubkey,
-        toUnixTimestamp(created_at) as created_at,
+        created_at,
         kind,
         tags,
         content,
@@ -303,7 +303,7 @@ export class NostrRelay {
     return data.map((row) => ({
       id: row.id,
       pubkey: row.pubkey,
-      created_at: Math.floor(row.created_at),
+      created_at: row.created_at,
       kind: row.kind,
       tags: row.tags,
       content: row.content,

@@ -22,12 +22,12 @@ await clickhouse.query({
   query: `CREATE TABLE IF NOT EXISTS events (
     id String,
     pubkey String,
-    created_at DateTime64(3),
+    created_at UInt32,
     kind UInt32,
     tags Array(Array(String)),
     content String,
     sig String,
-    event_date Date MATERIALIZED toDate(created_at),
+    event_date Date MATERIALIZED toDate(toDateTime(created_at)),
     INDEX idx_pubkey pubkey TYPE bloom_filter GRANULARITY 1,
     INDEX idx_kind kind TYPE minmax GRANULARITY 1,
     INDEX idx_created_at created_at TYPE minmax GRANULARITY 1
