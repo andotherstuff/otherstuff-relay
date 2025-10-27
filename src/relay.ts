@@ -19,7 +19,7 @@ type Subscription = {
   sendEose: () => void;
 };
 
-class RateLimiter {
+class _RateLimiter {
   private lastReset = Date.now();
   private eventCount = 0;
   private readonly maxEventsPerSecond: number;
@@ -64,17 +64,17 @@ class RateLimiter {
 export class NostrRelay {
   private subscriptions = new Map<string, Subscription>();
   private connectionSubs = new Map<string, Set<string>>();
-  private connectionRateLimiters = new Map<string, RateLimiter>();
+  private connectionRateLimiters = new Map<string, _RateLimiter>();
 
   constructor(
     private config: Config,
     private clickhouse: ClickHouseClient,
   ) {}
 
-  async handleEvent(
+  handleEvent(
     event: NostrEvent,
-    connId?: string,
-  ): Promise<[boolean, string]> {
+    _connId?: string,
+  ): [boolean, string] {
     eventsReceivedCounter.inc();
 
     if (!this.isValidEvent(event)) {
@@ -87,11 +87,25 @@ export class NostrRelay {
       return [false, "rejected: event too large"];
     }
 
+    // Insert event directly into ClickHouse
     (async () => {
-      const success = await this.clickhouse.insertEvent(event);
-      if (success) {
+      try {
+        await this.clickhouse.insert({
+          table: "events",
+          values: [{
+            id: event.id,
+            pubkey: event.pubkey,
+            created_at: new Date(event.created_at * 1000),
+            kind: event.kind,
+            tags: event.tags,
+            content: event.content,
+            sig: event.sig,
+          }],
+          format: "JSONEachRow",
+        });
         eventsStoredCounter.inc();
-      } else {
+      } catch (error) {
+        console.error("Failed to insert event:", error);
         eventsFailedCounter.inc();
       }
     })();
@@ -134,7 +148,7 @@ export class NostrRelay {
 
     const queryPromises = filters.map(async (filter) => {
       try {
-        const events = await this.clickhouse.queryEvents(filter);
+        const events = await this.queryEvents(filter);
         for (const event of events) {
           sendEvent(event);
         }
@@ -202,7 +216,99 @@ export class NostrRelay {
     this.subscriptions.clear();
     this.connectionSubs.clear();
     this.connectionRateLimiters.clear();
-    await this.clickhouse.shutdown();
+    await this.clickhouse.close();
+  }
+
+  private async queryEvents(filter: NostrFilter): Promise<NostrEvent[]> {
+    const conditions: string[] = [];
+    const params: Record<string, unknown> = {};
+
+    if (filter.ids && filter.ids.length > 0) {
+      conditions.push(`id IN {ids:Array(String)}`);
+      params.ids = filter.ids;
+    }
+
+    if (filter.authors && filter.authors.length > 0) {
+      conditions.push(`pubkey IN {authors:Array(String)}`);
+      params.authors = filter.authors;
+    }
+
+    if (filter.kinds && filter.kinds.length > 0) {
+      conditions.push(`kind IN {kinds:Array(UInt32)}`);
+      params.kinds = filter.kinds;
+    }
+
+    if (filter.since) {
+      conditions.push(`created_at >= {since:DateTime64(3)}`);
+      params.since = new Date(filter.since * 1000);
+    }
+
+    if (filter.until) {
+      conditions.push(`created_at <= {until:DateTime64(3)}`);
+      params.until = new Date(filter.until * 1000);
+    }
+
+    // Handle tag filters (#e, #p, etc.)
+    for (const [key, values] of Object.entries(filter)) {
+      if (key.startsWith("#") && Array.isArray(values) && values.length > 0) {
+        const tagName = key.substring(1);
+        const paramName = `tag_${tagName}`;
+        const tagNameParam = `tagname_${tagName}`;
+        conditions.push(
+          `arrayExists(tag -> tag[1] = {${tagNameParam}:String} AND has({${paramName}:Array(String)}, tag[2]), tags)`,
+        );
+        params[paramName] = values;
+        params[tagNameParam] = tagName;
+      }
+    }
+
+    const whereClause = conditions.length > 0
+      ? `WHERE ${conditions.join(" AND ")}`
+      : "";
+
+    const limit = Math.min(filter.limit || 500, 5000);
+    params.limit = limit;
+
+    const query = `
+      SELECT
+        id,
+        pubkey,
+        toUnixTimestamp(created_at) as created_at,
+        kind,
+        tags,
+        content,
+        sig
+      FROM events
+      ${whereClause}
+      ORDER BY created_at DESC
+      LIMIT {limit:UInt32}
+    `;
+
+    const resultSet = await this.clickhouse.query({
+      query,
+      query_params: params,
+      format: "JSONEachRow",
+    });
+
+    const data = await resultSet.json<{
+      id: string;
+      pubkey: string;
+      created_at: number;
+      kind: number;
+      tags: string[][];
+      content: string;
+      sig: string;
+    }>();
+
+    return data.map((row) => ({
+      id: row.id,
+      pubkey: row.pubkey,
+      created_at: Math.floor(row.created_at),
+      kind: row.kind,
+      tags: row.tags,
+      content: row.content,
+      sig: row.sig,
+    }));
   }
 
   private isValidEvent(event: NostrEvent): boolean {

@@ -25,14 +25,14 @@ simplicity.
 
 ### Performance
 
-- **Event Batching**: Processes up to 1,000 events per batch, reducing database
-  connections by 99.9%
 - **Intelligent Rate Limiting**: Per-connection limits prevent abuse while
   maintaining throughput
 - **Query Optimization**: Automatic timeouts, size limits, and result caps
   protect system resources
 - **Fast Validation**: Rapid rejection of invalid events to minimize processing
   overhead
+- **Direct Database Access**: Efficient direct queries to ClickHouse for optimal
+  performance
 
 ### Reliability
 
@@ -92,13 +92,6 @@ DATABASE_URL=clickhouse://localhost/nostr
 # Examples:
 # DATABASE_URL=clickhouse://default:password@localhost:8123/nostr
 # DATABASE_URL=clickhouse://user@clickhouse.example.com:9000/mydb
-```
-
-#### Performance Tuning
-
-```bash
-BATCH_SIZE=10000                            # Events per database batch
-FLUSH_INTERVAL=50                           # Maximum batch flush delay (ms)
 ```
 
 #### Feature Flags
@@ -176,8 +169,8 @@ SETTINGS index_granularity = 8192
 ### Resource Efficiency
 
 - **Memory Usage**: < 100MB for typical workloads
-- **CPU Utilization**: Minimal overhead due to event batching
-- **Database Connections**: Pool-based connection management
+- **CPU Utilization**: Minimal overhead with efficient query execution
+- **Database Connections**: Native ClickHouse client connection management
 
 ### Scalability
 
