@@ -12,6 +12,24 @@ const config = new Config(Deno.env);
 // Instantiate ClickHouse client with config
 const clickhouse = createClient({
   url: config.databaseUrl,
+  compression: {
+    request: true,
+    response: true,
+  },
+  clickhouse_settings: {
+    // Enable async inserts for maximum write throughput
+    async_insert: 1,
+    wait_for_async_insert: 0,
+    async_insert_busy_timeout_ms: 1000,
+    
+    // Remove query execution limits
+    max_execution_time: 0,
+    max_result_rows: "0",
+    max_result_bytes: "0",
+    
+    // Enable HTTP compression
+    enable_http_compression: 1,
+  },
 });
 
 // Initialize ClickHouse database and tables
