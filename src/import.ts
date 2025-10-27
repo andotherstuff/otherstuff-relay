@@ -16,14 +16,14 @@ interface ImportStats {
   currentBatch: Event[];
 }
 
-async function makeRequest(query: string, data?: any): Promise<string> {
+async function makeRequest(query: string, data?: any, isRawData: boolean = false): Promise<string> {
   const url = new URL(CLICKHOUSE_URL);
 
   url.searchParams.set("database", config.clickhouse.database);
   url.searchParams.set("query", query);
 
   const headers: Record<string, string> = {
-    "Content-Type": data ? "application/json" : "text/plain",
+    "Content-Type": data ? (isRawData ? "text/plain" : "application/json") : "text/plain",
   };
 
   if (config.clickhouse.user) {
@@ -41,7 +41,7 @@ async function makeRequest(query: string, data?: any): Promise<string> {
       const response = await fetch(url.toString(), {
         method: "POST",
         headers,
-        body: data ? JSON.stringify(data) : undefined,
+        body: data ? (isRawData ? data : JSON.stringify(data)) : undefined,
         signal: AbortSignal.timeout(60000),
       });
 
@@ -70,16 +70,17 @@ async function makeRequest(query: string, data?: any): Promise<string> {
   throw lastError;
 }
 
-async function insertBatch(events: Event[]): Promise<void> {
-  if (events.length === 0) return;
+async function insertBatch(events: Event[]): Promise<{ success: number; failed: number }> {
+  if (events.length === 0) return { success: 0, failed: 0 };
 
-  const query = `
-    INSERT INTO events FORMAT JSONEachRow
-  `;
+  // Validate and transform events before sending to ClickHouse
+  const validEvents: any[] = [];
+  let serializationErrors = 0;
   
-  const eventData = events.map((event) => {
+  for (const event of events) {
     try {
-      return JSON.stringify({
+      // Transform the event to ClickHouse format
+      const transformedEvent = {
         id: event.id,
         pubkey: event.pubkey,
         created_at: new Date(event.created_at * 1000).toISOString().replace(
@@ -90,19 +91,62 @@ async function insertBatch(events: Event[]): Promise<void> {
         tags: event.tags || [],
         content: event.content,
         sig: event.sig,
-      });
+      };
+      validEvents.push(transformedEvent);
     } catch (error) {
-      console.warn("Failed to serialize event:", event.id, error);
-      return null;
+      console.warn("Failed to transform event:", event.id, error);
+      serializationErrors++;
     }
-  }).filter(Boolean).join("\n");
-
-  if (!eventData) {
-    console.warn("No valid events in batch");
-    return;
   }
 
-  await makeRequest(query, eventData);
+  if (validEvents.length === 0) {
+    console.warn("No valid events in batch");
+    return { success: 0, failed: events.length };
+  }
+
+  // Create the query with FORMAT JSONEachRow
+  const query = `
+    INSERT INTO events FORMAT JSONEachRow
+  `;
+
+  // Create the JSONEachRow data (one JSON object per line)
+  const eventData = validEvents
+    .map(event => JSON.stringify(event))
+    .join("\n");
+
+  try {
+    // Send the raw JSONEachRow data as the body
+    await makeRequest(query, eventData, true); // Mark as raw data
+    return { 
+      success: validEvents.length, 
+      failed: serializationErrors 
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error(`Batch insert failed for ${validEvents.length} events:`, errorMessage);
+    
+    // If the entire batch fails, try individual events
+    console.log("Attempting to insert events individually...");
+    let individualSuccess = 0;
+    let individualFailed = serializationErrors;
+    
+    for (const event of validEvents) {
+      try {
+        const individualEventData = JSON.stringify(event);
+        await makeRequest(query, individualEventData, true); // Mark as raw data
+        individualSuccess++;
+      } catch (individualError) {
+        const individualErrorMessage = individualError instanceof Error ? individualError.message : String(individualError);
+        console.warn("Individual event insert failed:", individualErrorMessage);
+        individualFailed++;
+      }
+    }
+    
+    return { 
+      success: individualSuccess, 
+      failed: individualFailed 
+    };
+  }
 }
 
 function validateEvent(event: any): event is Event {
@@ -119,16 +163,43 @@ function validateEvent(event: any): event is Event {
 }
 
 function parseLine(line: string): Event | null {
+  // Skip empty lines early
+  if (!line || !line.trim()) {
+    return null;
+  }
+
   try {
-    const event = JSON.parse(line);
+    // Basic JSON validation before full parsing
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+      console.warn("Invalid JSON format - not an object:", trimmed.substring(0, 100) + "...");
+      return null;
+    }
+
+    const event = JSON.parse(trimmed);
+    
+    // Additional validation to prevent parsing of obviously wrong data
+    if (!event || typeof event !== 'object') {
+      console.warn("Parsed data is not an object:", trimmed.substring(0, 100) + "...");
+      return null;
+    }
+
     if (validateEvent(event)) {
       return event;
     } else {
-      console.warn("Invalid event structure:", line.substring(0, 100) + "...");
+      console.warn("Invalid event structure:", trimmed.substring(0, 100) + "...");
       return null;
     }
   } catch (error) {
-    console.warn("Failed to parse JSON line:", line.substring(0, 100) + "...");
+    // More specific error handling
+    const errorMessage = (error as Error).message;
+    if (errorMessage.includes('Unexpected token')) {
+      console.warn("JSON syntax error:", errorMessage, "-", line.substring(0, 100) + "...");
+    } else if (errorMessage.includes('Unexpected end')) {
+      console.warn("Incomplete JSON data:", line.substring(0, 100) + "...");
+    } else {
+      console.warn("JSON parse error:", errorMessage, "-", line.substring(0, 100) + "...");
+    }
     return null;
   }
 }
@@ -160,45 +231,138 @@ function formatDuration(ms: number): string {
   }
 }
 
+interface FileProcessorStats {
+  totalChunks: number;
+  successfulChunks: number;
+  failedChunks: number;
+  consecutiveFailures: number;
+}
+
 async function* processFile(filePath: string): AsyncGenerator<Event[], void, unknown> {
   const file = await Deno.open(filePath, { read: true });
   const decoder = new TextDecoder();
   const buffer = new Uint8Array(64 * 1024); // 64KB buffer
   let remaining = "";
+  let chunkCount = 0;
+  
+  const stats: FileProcessorStats = {
+    totalChunks: 0,
+    successfulChunks: 0,
+    failedChunks: 0,
+    consecutiveFailures: 0
+  };
+  
+  const MAX_CONSECUTIVE_FAILURES = 10;
   
   try {
     while (true) {
-      const bytesRead = await file.read(buffer);
+      let bytesRead: number | null;
+      try {
+        bytesRead = await file.read(buffer);
+        stats.consecutiveFailures = 0; // Reset on successful read
+      } catch (readError) {
+        stats.failedChunks++;
+        stats.consecutiveFailures++;
+        const readErrorMessage = readError instanceof Error ? readError.message : String(readError);
+        console.error(`File read error in chunk ${chunkCount}:`, readErrorMessage);
+        
+        // Circuit breaker: stop if too many consecutive failures
+        if (stats.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+          console.error(`Too many consecutive read failures (${MAX_CONSECUTIVE_FAILURES}), stopping file processing`);
+          break;
+        }
+        
+        chunkCount++;
+        continue;
+      }
+      
       if (bytesRead === null) break;
       
-      const chunk = decoder.decode(buffer.subarray(0, bytesRead));
+      let chunk: string;
+      try {
+        chunk = decoder.decode(buffer.subarray(0, bytesRead), { stream: true });
+      } catch (decodeError) {
+        stats.failedChunks++;
+        stats.consecutiveFailures++;
+        const decodeErrorMessage = decodeError instanceof Error ? decodeError.message : String(decodeError);
+        console.error(`Text decoding error in chunk ${chunkCount}:`, decodeErrorMessage);
+        
+        if (stats.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+          console.error(`Too many consecutive decode failures (${MAX_CONSECUTIVE_FAILURES}), stopping file processing`);
+          break;
+        }
+        
+        chunkCount++;
+        continue;
+      }
+      
+      stats.consecutiveFailures = 0; // Reset on successful decode
       const lines = (remaining + chunk).split("\n");
       remaining = lines.pop() || "";
       
       const events: Event[] = [];
+      let lineParseErrors = 0;
+      
       for (const line of lines) {
         if (line.trim()) {
-          const event = parseLine(line.trim());
-          if (event) {
-            events.push(event);
+          try {
+            const event = parseLine(line.trim());
+            if (event) {
+              events.push(event);
+            }
+          } catch (parseError) {
+            lineParseErrors++;
+            const parseErrorMessage = parseError instanceof Error ? parseError.message : String(parseError);
+            // Only log first few errors per chunk to avoid spam
+            if (lineParseErrors <= 3) {
+              console.warn("Error parsing line in chunk:", parseErrorMessage);
+            }
           }
         }
       }
       
+      if (lineParseErrors > 3) {
+        console.warn(`... ${lineParseErrors - 3} additional line parsing errors in chunk ${chunkCount}`);
+      }
+      
       if (events.length > 0) {
+        stats.successfulChunks++;
         yield events;
+      } else if (lineParseErrors === 0) {
+        // Chunk had no events and no parse errors, likely empty or whitespace
+        stats.successfulChunks++;
+      }
+      
+      stats.totalChunks++;
+      chunkCount++;
+      
+      // Log progress every 1000 chunks for very large files
+      if (chunkCount % 1000 === 0) {
+        console.log(`📖 Processed ${chunkCount.toLocaleString()} chunks (${stats.successfulChunks} successful, ${stats.failedChunks} failed)`);
       }
     }
     
     // Process remaining data
     if (remaining.trim()) {
-      const event = parseLine(remaining.trim());
-      if (event) {
-        yield [event];
+      try {
+        const event = parseLine(remaining.trim());
+        if (event) {
+          yield [event];
+        }
+      } catch (finalParseError) {
+        const finalParseErrorMessage = finalParseError instanceof Error ? finalParseError.message : String(finalParseError);
+        console.warn("Error parsing final remaining data:", finalParseErrorMessage);
       }
     }
+    
+    console.log(`📚 File processing complete: ${stats.totalChunks.toLocaleString()} total chunks, ${stats.successfulChunks.toLocaleString()} successful, ${stats.failedChunks.toLocaleString()} failed`);
   } finally {
-    file.close();
+    try {
+      file.close();
+    } catch (closeError) {
+      const closeErrorMessage = closeError instanceof Error ? closeError.message : String(closeError);
+      console.error("Error closing file:", closeErrorMessage);
+    }
   }
 }
 
@@ -252,6 +416,8 @@ async function main() {
   let processedLines = 0;
   let validEvents = 0;
   let invalidEvents = 0;
+  let successfulInserts = 0;
+  let failedInserts = 0;
   let batchCount = 0;
   const startTime = Date.now();
   let lastProgressTime = startTime;
@@ -282,14 +448,16 @@ async function main() {
         batchCount++;
         const batchStart = Date.now();
         
-        try {
-          await insertBatch(currentBatch);
-          const batchDuration = Date.now() - batchStart;
-          
-          console.log(`✅ Batch ${batchCount}: ${currentBatch.length.toLocaleString()} events in ${batchDuration}ms`);
-        } catch (error) {
-          console.error(`❌ Batch ${batchCount} failed:`, error.message);
-          // Continue processing other batches even if one fails
+        const result = await insertBatch(currentBatch);
+        const batchDuration = Date.now() - batchStart;
+        
+        successfulInserts += result.success;
+        failedInserts += result.failed;
+        
+        if (result.success > 0) {
+          console.log(`✅ Batch ${batchCount}: ${result.success.toLocaleString()} successful, ${result.failed.toLocaleString()} failed in ${batchDuration}ms`);
+        } else {
+          console.log(`❌ Batch ${batchCount}: All ${result.failed.toLocaleString()} events failed in ${batchDuration}ms`);
         }
         
         currentBatch.length = 0; // Clear batch
@@ -316,11 +484,14 @@ async function main() {
     // Process final batch
     if (currentBatch.length > 0) {
       batchCount++;
-      try {
-        await insertBatch(currentBatch);
-        console.log(`✅ Final batch: ${currentBatch.length.toLocaleString()} events`);
-      } catch (error) {
-        console.error(`❌ Final batch failed:`, error.message);
+      const result = await insertBatch(currentBatch);
+      successfulInserts += result.success;
+      failedInserts += result.failed;
+      
+      if (result.success > 0) {
+        console.log(`✅ Final batch: ${result.success.toLocaleString()} successful, ${result.failed.toLocaleString()} failed`);
+      } else {
+        console.log(`❌ Final batch: All ${result.failed.toLocaleString()} events failed`);
       }
     }
     
@@ -334,10 +505,13 @@ async function main() {
     console.log(`   Total lines processed: ${processedLines.toLocaleString()}`);
     console.log(`   Valid events: ${validEvents.toLocaleString()}`);
     console.log(`   Invalid events: ${invalidEvents.toLocaleString()}`);
+    console.log(`   Successful inserts: ${successfulInserts.toLocaleString()}`);
+    console.log(`   Failed inserts: ${failedInserts.toLocaleString()}`);
     console.log(`   Batches processed: ${batchCount}`);
     console.log(`   Total time: ${formatDuration(totalTime)}`);
     console.log(`   Average rate: ${avgLinesPerSecond.toLocaleString()} lines/s, ${avgEventsPerSecond.toLocaleString()} events/s`);
-    console.log(`   Success rate: ${((validEvents / processedLines) * 100).toFixed(2)}%`);
+    console.log(`   Parse success rate: ${((validEvents / processedLines) * 100).toFixed(2)}%`);
+    console.log(`   Insert success rate: ${((successfulInserts / (successfulInserts + failedInserts)) * 100).toFixed(2)}%`);
     
   } catch (error) {
     console.error("❌ Import failed:", error);
