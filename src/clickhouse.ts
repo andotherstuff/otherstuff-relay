@@ -1,17 +1,17 @@
 import { config } from "./config.ts";
-import type { Event, Filter } from "./types.ts";
+import type { NostrEvent, NostrFilter } from "@nostrify/nostrify";
 
 const CLICKHOUSE_URL =
   `http://${config.clickhouse.host}:${config.clickhouse.httpPort}`;
 
 interface EventBatch {
-  events: Event[];
+  events: NostrEvent[];
   resolve: () => void;
   reject: (error: Error) => void;
 }
 
 class EventBuffer {
-  private buffer: Event[] = [];
+  private buffer: NostrEvent[] = [];
   private batchTimeout: number | null = null;
   private isProcessing = false;
   private processingQueue = 0;
@@ -21,8 +21,8 @@ class EventBuffer {
     private flushInterval: number = 50,
   ) {}
 
-  addEvent(event: Event): Promise<void> {
-    return new Promise((resolve, reject) => {
+  addEvent(event: NostrEvent): Promise<void> {
+    return new Promise((resolve) => {
       this.buffer.push(event);
 
       if (this.buffer.length >= this.batchSize) {
@@ -90,7 +90,7 @@ const eventBuffer = new EventBuffer(
   parseInt(Deno.env.get("FLUSH_INTERVAL") || "50"),
 );
 
-async function makeRequest(query: string, data?: any): Promise<string> {
+async function makeRequest(query: string, data?: unknown): Promise<string> {
   const url = new URL(CLICKHOUSE_URL);
 
   url.searchParams.set("database", config.clickhouse.database);
@@ -151,7 +151,7 @@ async function makeRequest(query: string, data?: any): Promise<string> {
   throw lastError;
 }
 
-async function insertBatch(events: Event[]): Promise<void> {
+async function insertBatch(events: NostrEvent[]): Promise<void> {
   if (events.length === 0) return;
 
   const query = `
@@ -209,7 +209,7 @@ export async function initDatabase(): Promise<void> {
   }
 }
 
-export async function insertEvent(event: Event): Promise<boolean> {
+export async function insertEvent(event: NostrEvent): Promise<boolean> {
   try {
     await eventBuffer.addEvent(event);
     return true;
@@ -221,7 +221,7 @@ export async function insertEvent(event: Event): Promise<boolean> {
   }
 }
 
-export async function queryEvents(filter: Filter): Promise<Event[]> {
+export async function queryEvents(filter: NostrFilter): Promise<NostrEvent[]> {
   try {
     const conditions: string[] = [];
 
@@ -279,7 +279,7 @@ export async function queryEvents(filter: Filter): Promise<Event[]> {
     `;
 
     const response = await makeRequest(query);
-    const events: Event[] = [];
+    const events: NostrEvent[] = [];
 
     if (response.trim()) {
       const lines = response.trim().split("\n").filter((line) => line.trim());

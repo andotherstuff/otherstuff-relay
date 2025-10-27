@@ -3,6 +3,7 @@
     "lib": ["deno.window"]
   },
   "imports": {
+    "@nostrify/nostrify": "jsr:@nostrify/nostrify@^0.46.5",
     "hono": "npm:hono@^4.10.3",
     "prom-client": "npm:prom-client@^15.1.0"
   },

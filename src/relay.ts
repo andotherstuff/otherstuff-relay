@@ -9,13 +9,13 @@ import {
   subscriptionsGauge,
 } from "./metrics.ts";
 import { config } from "./config.ts";
-import type { Event, Filter } from "./types.ts";
+import type { NostrEvent, NostrFilter } from "@nostrify/nostrify";
 
 type Subscription = {
   connId: string;
   subId: string;
-  filters: Filter[];
-  sendEvent: (event: Event) => void;
+  filters: NostrFilter[];
+  sendEvent: (event: NostrEvent) => void;
   sendEose: () => void;
 };
 
@@ -70,7 +70,10 @@ export class NostrRelay {
     await initDatabase();
   }
 
-  async handleEvent(event: Event, connId?: string): Promise<[boolean, string]> {
+  async handleEvent(
+    event: NostrEvent,
+    connId?: string,
+  ): Promise<[boolean, string]> {
     eventsReceivedCounter.inc();
 
     if (!this.isValidEvent(event)) {
@@ -98,8 +101,8 @@ export class NostrRelay {
   async handleReq(
     connId: string,
     subId: string,
-    filters: Filter[],
-    sendEvent: (event: Event) => void,
+    filters: NostrFilter[],
+    sendEvent: (event: NostrEvent) => void,
     sendEose: () => void,
   ): Promise<void> {
     subscriptionsGauge.inc();
@@ -200,7 +203,7 @@ export class NostrRelay {
     this.connectionRateLimiters.clear();
   }
 
-  private isValidEvent(event: Event): boolean {
+  private isValidEvent(event: NostrEvent): boolean {
     if (
       !event.id || !event.pubkey || !event.sig ||
       typeof event.created_at !== "number" || typeof event.kind !== "number"

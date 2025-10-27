@@ -3,7 +3,11 @@ import { NostrRelay } from "./relay.ts";
 import { shutdown as clickhouseShutdown } from "./clickhouse.ts";
 import { config } from "./config.ts";
 import { connectionsGauge, getMetrics, register } from "./metrics.ts";
-import type { ClientMessage, Event, RelayMessage } from "./types.ts";
+import type {
+  NostrClientMsg,
+  NostrEvent,
+  NostrRelayMsg,
+} from "@nostrify/nostrify";
 
 const app = new Hono();
 const relay = new NostrRelay();
@@ -41,7 +45,7 @@ app.get("/", (c) => {
 
   socket.onmessage = async (e) => {
     try {
-      const msg: ClientMessage = JSON.parse(e.data);
+      const msg: NostrClientMsg = JSON.parse(e.data);
 
       switch (msg[0]) {
         case "EVENT": {
@@ -57,7 +61,7 @@ app.get("/", (c) => {
             connId,
             subId,
             filters,
-            (event: Event) => send(["EVENT", subId, event]),
+            (event: NostrEvent) => send(["EVENT", subId, event]),
             () => send(["EOSE", subId]),
           );
           break;
@@ -91,12 +95,13 @@ app.get("/", (c) => {
     }
   };
 
-  function send(msg: RelayMessage) {
+  function send(msg: NostrRelayMsg) {
     try {
       if (socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify(msg));
       }
-    } catch (err) {
+    } catch {
+      // fallthrough
     }
   }
 
