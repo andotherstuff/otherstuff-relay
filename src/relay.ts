@@ -1,7 +1,7 @@
-import { insertEvent, queryEvents, initDatabase } from './clickhouse.ts';
-import { metrics } from './metrics.ts';
-import { config } from './config.ts';
-import type { Event, Filter } from './types.ts';
+import { initDatabase, insertEvent, queryEvents } from "./clickhouse.ts";
+import { metrics } from "./metrics.ts";
+import { config } from "./config.ts";
+import type { Event, Filter } from "./types.ts";
 
 type Subscription = {
   connId: string;
@@ -11,23 +11,70 @@ type Subscription = {
   sendEose: () => void;
 };
 
+class RateLimiter {
+  private lastReset = Date.now();
+  private eventCount = 0;
+  private readonly maxEventsPerSecond: number;
+  private readonly maxEventsPerMinute: number;
+  private readonly minuteEvents: number[] = [];
+
+  constructor(maxPerSecond: number = 10, maxPerMinute: number = 1000) {
+    this.maxEventsPerSecond = maxPerSecond;
+    this.maxEventsPerMinute = maxPerMinute;
+  }
+
+  canPostEvent(): boolean {
+    const now = Date.now();
+
+    if (now - this.lastReset >= 1000) {
+      this.eventCount = 0;
+      this.lastReset = now;
+    }
+
+    const oneMinuteAgo = now - 60000;
+    while (
+      this.minuteEvents.length > 0 && this.minuteEvents[0] < oneMinuteAgo
+    ) {
+      this.minuteEvents.shift();
+    }
+
+    if (this.eventCount >= this.maxEventsPerSecond) {
+      return false;
+    }
+
+    if (this.minuteEvents.length >= this.maxEventsPerMinute) {
+      return false;
+    }
+
+    this.eventCount++;
+    this.minuteEvents.push(now);
+
+    return true;
+  }
+}
+
 export class NostrRelay {
-  private subscriptions = new Map<string, Subscription>(); // subId -> subscription
-  private connectionSubs = new Map<string, Set<string>>(); // connId -> set of subIds
+  private subscriptions = new Map<string, Subscription>();
+  private connectionSubs = new Map<string, Set<string>>();
+  private connectionRateLimiters = new Map<string, RateLimiter>();
 
   async init(): Promise<void> {
     await initDatabase();
   }
 
-  async handleEvent(event: Event): Promise<[boolean, string]> {
+  async handleEvent(event: Event, connId?: string): Promise<[boolean, string]> {
     metrics.events.received();
-    
-    // Basic validation
+
     if (!this.isValidEvent(event)) {
-      return [false, 'invalid: event validation failed'];
+      metrics.events.invalid();
+      return [false, "invalid: event validation failed"];
     }
 
-    // Async insert - don't wait for it
+    if (JSON.stringify(event).length > 500000) {
+      metrics.events.rejected();
+      return [false, "rejected: event too large"];
+    }
+
     (async () => {
       const success = await insertEvent(event);
       if (success) {
@@ -37,7 +84,7 @@ export class NostrRelay {
       }
     })();
 
-    return [true, ''];
+    return [true, ""];
   }
 
   async handleReq(
@@ -49,8 +96,17 @@ export class NostrRelay {
   ): Promise<void> {
     metrics.subscriptions.inc();
     metrics.queries.inc();
-    
-    // Track subscription
+
+    const connSubs = this.connectionSubs.get(connId);
+    if (connSubs && connSubs.size >= 10) {
+      sendEose();
+      return;
+    }
+
+    if (filters.length > 10) {
+      filters = filters.slice(0, 10);
+    }
+
     this.subscriptions.set(subId, {
       connId,
       subId,
@@ -58,24 +114,36 @@ export class NostrRelay {
       sendEvent,
       sendEose,
     });
-    
+
     if (!this.connectionSubs.has(connId)) {
       this.connectionSubs.set(connId, new Set());
     }
     this.connectionSubs.get(connId)!.add(subId);
 
-    // Parallel query execution - each filter runs in parallel
     const queryPromises = filters.map(async (filter) => {
-      const events = await queryEvents(filter);
-      for (const event of events) {
-        sendEvent(event);
+      try {
+        const events = await queryEvents(filter);
+        for (const event of events) {
+          sendEvent(event);
+        }
+        return events.length;
+      } catch (error) {
+        console.error("Query failed for filter:", filter, error);
+        return 0;
       }
-      return events.length;
     });
 
-    // Wait for all queries to complete
-    await Promise.all(queryPromises);
-    
+    try {
+      await Promise.race([
+        Promise.all(queryPromises),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Query timeout")), 10000)
+        ),
+      ]);
+    } catch (error) {
+      console.error("Query timeout or error:", error);
+    }
+
     sendEose();
   }
 
@@ -86,6 +154,7 @@ export class NostrRelay {
       subs.delete(subId);
       if (subs.size === 0) {
         this.connectionSubs.delete(connId);
+        this.connectionRateLimiters.delete(connId);
       }
     }
     metrics.subscriptions.dec();
@@ -98,55 +167,63 @@ export class NostrRelay {
         this.subscriptions.delete(subId);
       }
       this.connectionSubs.delete(connId);
+      this.connectionRateLimiters.delete(connId);
       metrics.subscriptions.dec();
     }
   }
 
-  health(): { status: string; subscriptions: number } {
+  health(): {
+    status: string;
+    subscriptions: number;
+    connections: number;
+    rateLimiters: number;
+  } {
     return {
-      status: 'ok',
+      status: "ok",
       subscriptions: this.subscriptions.size,
+      connections: this.connectionSubs.size,
+      rateLimiters: this.connectionRateLimiters.size,
     };
   }
 
   async close(): Promise<void> {
     this.subscriptions.clear();
     this.connectionSubs.clear();
+    this.connectionRateLimiters.clear();
   }
 
   private isValidEvent(event: Event): boolean {
-    // Basic structure validation
-    if (!event.id || !event.pubkey || !event.sig || typeof event.created_at !== 'number' || typeof event.kind !== 'number') {
+    if (
+      !event.id || !event.pubkey || !event.sig ||
+      typeof event.created_at !== "number" || typeof event.kind !== "number"
+    ) {
       return false;
     }
-    
-    // ID validation (should be 64-char hex)
+
     if (!/^[a-f0-9]{64}$/i.test(event.id)) {
       return false;
     }
-    
-    // Pubkey validation (should be 64-char hex)
+
     if (!/^[a-f0-9]{64}$/i.test(event.pubkey)) {
       return false;
     }
-    
-    // Content should be string
-    if (typeof event.content !== 'string') {
+
+    if (typeof event.content !== "string") {
       return false;
     }
-    
-    // Tags should be array of arrays
+
     if (!Array.isArray(event.tags) || !event.tags.every(Array.isArray)) {
       return false;
     }
-    
-    // Skip signature verification if disabled
+
+    if (event.content.length > 50000) {
+      return false;
+    }
+
     if (!config.verification.enabled) {
       return true;
     }
-    
-    // TODO: Add actual signature verification if needed
-    // For now, just check sig format
+
     return /^[a-f0-9]{128}$/i.test(event.sig);
   }
 }

@@ -1,6 +1,5 @@
 {
   "compilerOptions": {
-    "allowJs": true,
     "lib": ["deno.window"]
   },
   "lint": {
@@ -9,12 +8,11 @@
     }
   },
   "fmt": {
-    "files": {
-      "include": ["src/", "*.ts", "*.js"]
-    }
+    "include": ["src/", "*.ts", "*.js"]
   },
   "tasks": {
     "start": "deno run --allow-net --allow-env src/server.ts",
-    "dev": "deno run --allow-net --allow-env --watch src/server.ts"
+    "dev": "deno run --allow-net --allow-env --watch src/server.ts",
+    "serve": "deno serve -A --env-file src/server.ts"
   }
 }

@@ -18,13 +18,13 @@ export type Filter = {
   [key: string]: any;
 };
 
-export type ClientMessage = 
-  | ['EVENT', Event]
-  | ['REQ', string, ...Filter[]]
-  | ['CLOSE', string];
+export type ClientMessage =
+  | ["EVENT", Event]
+  | ["REQ", string, ...Filter[]]
+  | ["CLOSE", string];
 
-export type RelayMessage = 
-  | ['EVENT', string, Event]
-  | ['OK', string, boolean, string]
-  | ['EOSE', string]
-  | ['NOTICE', string];
+export type RelayMessage =
+  | ["EVENT", string, Event]
+  | ["OK", string, boolean, string]
+  | ["EOSE", string]
+  | ["NOTICE", string];

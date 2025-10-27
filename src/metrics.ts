@@ -2,6 +2,9 @@ let connections = 0;
 let eventsReceived = 0;
 let eventsStored = 0;
 let eventsFailed = 0;
+let eventsRateLimited = 0;
+let eventsInvalid = 0;
+let eventsRejected = 0;
 let queries = 0;
 let subscriptions = 0;
 
@@ -15,9 +18,15 @@ export const metrics = {
     received: () => eventsReceived++,
     stored: () => eventsStored++,
     failed: () => eventsFailed++,
+    rateLimited: () => eventsRateLimited++,
+    invalid: () => eventsInvalid++,
+    rejected: () => eventsRejected++,
     getReceived: () => eventsReceived,
     getStored: () => eventsStored,
     getFailed: () => eventsFailed,
+    getRateLimited: () => eventsRateLimited,
+    getInvalid: () => eventsInvalid,
+    getRejected: () => eventsRejected,
   },
   queries: {
     inc: () => queries++,
@@ -47,6 +56,18 @@ nostr_events_stored ${eventsStored}
 # HELP nostr_events_failed Total events failed to store
 # TYPE nostr_events_failed counter
 nostr_events_failed ${eventsFailed}
+
+# HELP nostr_events_rate_limited Total events rate limited
+# TYPE nostr_events_rate_limited counter
+nostr_events_rate_limited ${eventsRateLimited}
+
+# HELP nostr_events_invalid Total events invalid
+# TYPE nostr_events_invalid counter
+nostr_events_invalid ${eventsInvalid}
+
+# HELP nostr_events_rejected Total events rejected
+# TYPE nostr_events_rejected counter
+nostr_events_rejected ${eventsRejected}
 
 # HELP nostr_queries_total Total queries processed
 # TYPE nostr_queries_total counter
