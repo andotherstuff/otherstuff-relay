@@ -22,26 +22,15 @@ await redis.connect();
 console.log("🔧 Worker started, waiting for events...");
 
 const BATCH_SIZE = 1000; // Number of events to batch before inserting
-const BATCH_TIMEOUT_MS = 100; // Maximum time to wait before flushing batch
+const POLL_INTERVAL_MS = 10; // How often to check Redis when queue is empty
 
-let batch: NostrEvent[] = [];
-let batchTimer: number | null = null;
-
-async function flushBatch() {
-  if (batch.length === 0) return;
-
-  const eventsToInsert = batch;
-  batch = [];
-
-  if (batchTimer !== null) {
-    clearTimeout(batchTimer);
-    batchTimer = null;
-  }
+async function insertBatch(events: NostrEvent[]) {
+  if (events.length === 0) return;
 
   try {
     await clickhouse.insert({
       table: "nostr_events",
-      values: eventsToInsert.map((event) => ({
+      values: events.map((event) => ({
         id: event.id,
         pubkey: event.pubkey,
         created_at: event.created_at,
@@ -53,21 +42,13 @@ async function flushBatch() {
       format: "JSONEachRow",
     });
 
-    console.log(`✅ Inserted ${eventsToInsert.length} events into ClickHouse`);
+    console.log(`✅ Inserted ${events.length} events into ClickHouse`);
   } catch (error) {
     console.error("❌ Failed to insert batch:", error);
     // Push failed events back to queue for retry
-    for (const event of eventsToInsert) {
+    for (const event of events) {
       await redis.rPush("nostr:events:queue", JSON.stringify(event));
     }
-  }
-}
-
-function scheduleBatchFlush() {
-  if (batchTimer === null) {
-    batchTimer = setTimeout(() => {
-      flushBatch();
-    }, BATCH_TIMEOUT_MS);
   }
 }
 
@@ -75,25 +56,28 @@ function scheduleBatchFlush() {
 async function processEvents() {
   while (true) {
     try {
-      // BLPOP blocks until an event is available (timeout: 1 second)
-      const result = await redis.blPop("nostr:events:queue", 1);
+      // Pop up to BATCH_SIZE events at once using LPOP with count
+      // This is MUCH faster than popping one at a time
+      const results = await redis.lPopCount("nostr:events:queue", BATCH_SIZE);
 
-      if (result) {
-        const event = JSON.parse(result.element) as NostrEvent;
-        batch.push(event);
+      if (results && results.length > 0) {
+        const events: NostrEvent[] = [];
 
-        // Flush if batch is full
-        if (batch.length >= BATCH_SIZE) {
-          await flushBatch();
-        } else {
-          // Schedule a flush if not already scheduled
-          scheduleBatchFlush();
+        for (const result of results) {
+          try {
+            const event = JSON.parse(result) as NostrEvent;
+            events.push(event);
+          } catch (error) {
+            console.error("Failed to parse event:", error);
+          }
+        }
+
+        if (events.length > 0) {
+          await insertBatch(events);
         }
       } else {
-        // Timeout reached, flush any pending events
-        if (batch.length > 0) {
-          await flushBatch();
-        }
+        // Queue is empty, wait a bit before checking again
+        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
       }
     } catch (error) {
       console.error("Error processing events:", error);
@@ -106,7 +90,23 @@ async function processEvents() {
 // Graceful shutdown
 const shutdown = async () => {
   console.log("Shutting down worker...");
-  await flushBatch(); // Flush any remaining events
+  // Process any remaining events in the queue
+  const results = await redis.lPopCount("nostr:events:queue", BATCH_SIZE);
+  if (results && results.length > 0) {
+    const events: NostrEvent[] = results
+      .map((r: string) => {
+        try {
+          return JSON.parse(r) as NostrEvent;
+        } catch {
+          return null;
+        }
+      })
+      .filter((e: NostrEvent | null): e is NostrEvent => e !== null);
+
+    if (events.length > 0) {
+      await insertBatch(events);
+    }
+  }
   await redis.quit();
   await clickhouse.close();
   Deno.exit(0);
