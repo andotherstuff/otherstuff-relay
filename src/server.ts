@@ -1,4 +1,4 @@
-import { Hono } from "https://deno.land/x/hono@v3.12.11/mod.ts";
+import { Hono } from "hono";
 import { NostrRelay } from "./relay.ts";
 import { shutdown as clickhouseShutdown } from "./clickhouse.ts";
 import { config } from "./config.ts";
