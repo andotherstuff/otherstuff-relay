@@ -64,20 +64,19 @@ PORT=8000                                    # HTTP server port
 
 #### Database Configuration
 ```bash
-CLICKHOUSE_HOST=localhost                    # ClickHouse server host
-CLICKHOUSE_PORT=9000                        # ClickHouse native protocol port
-CLICKHOUSE_HTTP_PORT=8123                  # ClickHouse HTTP interface port
-CLICKHOUSE_DATABASE=nostr                   # Target database name
-CLICKHOUSE_USER=default                    # Database username
-CLICKHOUSE_PASSWORD=                       # Database password
+# ClickHouse connection URL
+# Format: clickhouse://[user[:password]@]host[:port]/database
+DATABASE_URL=clickhouse://localhost/nostr
+
+# Examples:
+# DATABASE_URL=clickhouse://default:password@localhost:8123/nostr
+# DATABASE_URL=clickhouse://user@clickhouse.example.com:9000/mydb
 ```
 
 #### Performance Tuning
 ```bash
-MAX_EVENTS_PER_SECOND=10                    # Rate limit per connection
-MAX_EVENTS_PER_MINUTE=1000                  # Rate limit per connection
-BATCH_SIZE=1000                             # Events per database batch
-FLUSH_INTERVAL=100                          # Maximum batch flush delay (ms)
+BATCH_SIZE=10000                            # Events per database batch
+FLUSH_INTERVAL=50                           # Maximum batch flush delay (ms)
 ```
 
 #### Feature Flags
