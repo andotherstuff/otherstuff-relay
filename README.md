@@ -1,4 +1,4 @@
-# Ditto Relay
+# Clickhouse Relay
 
 A high-performance Nostr relay server built with Deno and ClickHouse, optimized for high-throughput event processing and real-time data delivery.
 
