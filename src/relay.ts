@@ -1,4 +1,4 @@
-import type { ClickHouseClient } from "@clickhouse/client-web";
+import { verifyEvent } from "nostr-tools";
 import {
   eventsFailedCounter,
   eventsInvalidCounter,
@@ -8,6 +8,7 @@ import {
   queriesCounter,
   subscriptionsGauge,
 } from "./metrics.ts";
+import type { ClickHouseClient } from "@clickhouse/client-web";
 import type { NostrEvent, NostrFilter } from "@nostrify/nostrify";
 
 type Subscription = {
@@ -26,12 +27,12 @@ export class NostrRelay {
     private clickhouse: ClickHouseClient,
   ) {}
 
-  handleEvent(
+  async handleEvent(
     event: NostrEvent,
-  ): [boolean, string] {
+  ): Promise<[boolean, string]> {
     eventsReceivedCounter.inc();
 
-    if (!this.isValidEvent(event)) {
+    if (!verifyEvent(event)) {
       eventsInvalidCounter.inc();
       return [false, "invalid: event validation failed"];
     }
@@ -41,30 +42,28 @@ export class NostrRelay {
       return [false, "rejected: event too large"];
     }
 
-    // Insert event directly into ClickHouse
-    (async () => {
-      try {
-        await this.clickhouse.insert({
-          table: "events",
-          values: [{
-            id: event.id,
-            pubkey: event.pubkey,
-            created_at: event.created_at,
-            kind: event.kind,
-            tags: event.tags,
-            content: event.content,
-            sig: event.sig,
-          }],
-          format: "JSONEachRow",
-        });
-        eventsStoredCounter.inc();
-      } catch (error) {
-        console.error("Failed to insert event:", error);
-        eventsFailedCounter.inc();
-      }
-    })();
-
-    return [true, ""];
+    try {
+      // Insert event directly into ClickHouse
+      await this.clickhouse.insert({
+        table: "events",
+        values: [{
+          id: event.id,
+          pubkey: event.pubkey,
+          created_at: event.created_at,
+          kind: event.kind,
+          tags: event.tags,
+          content: event.content,
+          sig: event.sig,
+        }],
+        format: "JSONEachRow",
+      });
+      eventsStoredCounter.inc();
+      return [true, ""];
+    } catch (error) {
+      eventsFailedCounter.inc();
+      console.error("Failed to store event:", error);
+      return [false, "error: failed to store event"];
+    }
   }
 
   async handleReq(
@@ -258,36 +257,5 @@ export class NostrRelay {
       content: row.content,
       sig: row.sig,
     }));
-  }
-
-  private isValidEvent(event: NostrEvent): boolean {
-    if (
-      !event.id || !event.pubkey || !event.sig ||
-      typeof event.created_at !== "number" || typeof event.kind !== "number"
-    ) {
-      return false;
-    }
-
-    if (!/^[a-f0-9]{64}$/i.test(event.id)) {
-      return false;
-    }
-
-    if (!/^[a-f0-9]{64}$/i.test(event.pubkey)) {
-      return false;
-    }
-
-    if (typeof event.content !== "string") {
-      return false;
-    }
-
-    if (!Array.isArray(event.tags) || !event.tags.every(Array.isArray)) {
-      return false;
-    }
-
-    if (event.content.length > 50000) {
-      return false;
-    }
-
-    return /^[a-f0-9]{128}$/i.test(event.sig);
   }
 }

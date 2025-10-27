@@ -6,6 +6,7 @@
     "@clickhouse/client-web": "npm:@clickhouse/client-web@^1.12.1",
     "@nostrify/nostrify": "jsr:@nostrify/nostrify@^0.46.5",
     "hono": "npm:hono@^4.10.3",
+    "nostr-tools": "npm:nostr-tools@^2.17.1",
     "prom-client": "npm:prom-client@^15.1.0"
   }
 }

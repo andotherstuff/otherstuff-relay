@@ -1,13 +1,10 @@
 import { Hono } from "hono";
+import { NSchema as n } from "@nostrify/nostrify";
 import { createClient } from "@clickhouse/client-web";
 import { Config } from "./config.ts";
 import { NostrRelay } from "./relay.ts";
 import { connectionsGauge, getMetrics, register } from "./metrics.ts";
-import type {
-  NostrClientMsg,
-  NostrEvent,
-  NostrRelayMsg,
-} from "@nostrify/nostrify";
+import type { NostrEvent, NostrRelayMsg } from "@nostrify/nostrify";
 
 // Instantiate config with Deno.env
 const config = new Config(Deno.env);
@@ -71,7 +68,7 @@ app.get("/", (c) => {
 
   socket.onmessage = async (e) => {
     try {
-      const msg: NostrClientMsg = JSON.parse(e.data);
+      const msg = n.json().pipe(n.clientMsg()).parse(e.data);
 
       switch (msg[0]) {
         case "EVENT": {
