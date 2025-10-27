@@ -44,19 +44,23 @@ export class NostrRelay {
 
     try {
       // Insert event directly into ClickHouse
+      // Using raw query to ensure async_insert settings are respected
+      const eventData = {
+        id: event.id,
+        pubkey: event.pubkey,
+        created_at: event.created_at,
+        kind: event.kind,
+        tags: event.tags,
+        content: event.content,
+        sig: event.sig,
+      };
+      
       await this.clickhouse.insert({
         table: "events",
-        values: [{
-          id: event.id,
-          pubkey: event.pubkey,
-          created_at: event.created_at,
-          kind: event.kind,
-          tags: event.tags,
-          content: event.content,
-          sig: event.sig,
-        }],
+        values: [eventData],
         format: "JSONEachRow",
       });
+      
       eventsStoredCounter.inc();
       return [true, ""];
     } catch (error) {
