@@ -105,7 +105,6 @@ FLUSH_INTERVAL=50                           # Maximum batch flush delay (ms)
 
 ```bash
 NO_VERIFICATION=false                       # Disable signature verification
-METRICS_ENABLED=true                        # Enable metrics endpoint
 ```
 
 ### Running the Server

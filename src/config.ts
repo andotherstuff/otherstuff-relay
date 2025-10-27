@@ -15,10 +15,6 @@ export class Config {
   public readonly verification: {
     enabled: boolean;
   };
-  public readonly metrics: {
-    enabled: boolean;
-    path: string;
-  };
   public readonly batching: {
     batchSize: number;
     flushInterval: number;
@@ -33,11 +29,6 @@ export class Config {
 
     this.verification = {
       enabled: env.get("NO_VERIFICATION") !== "false",
-    };
-
-    this.metrics = {
-      enabled: env.get("METRICS_ENABLED") !== "false",
-      path: "/metrics",
     };
 
     this.batching = {

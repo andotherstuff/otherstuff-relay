@@ -23,14 +23,12 @@ await relay.init();
 const app = new Hono();
 
 // Metrics endpoint
-if (config.metrics.enabled) {
-  app.get(config.metrics.path, async (c) => {
-    const metricsText = await getMetrics();
-    return c.text(metricsText, 200, {
-      "Content-Type": register.contentType,
-    });
+app.get("/metrics", async (c) => {
+  const metricsText = await getMetrics();
+  return c.text(metricsText, 200, {
+    "Content-Type": register.contentType,
   });
-}
+});
 
 // Health endpoint
 app.get("/health", (c) => {
@@ -118,7 +116,7 @@ app.get("/", (c) => {
 
 console.log(`🔧 Initializing Nostr relay...`);
 console.log(
-  `📊 Metrics: http://localhost:${config.port}${config.metrics.path}`,
+  `📊 Metrics: http://localhost:${config.port}/metrics`,
 );
 console.log(
   `🔐 Verification: ${config.verification.enabled ? "enabled" : "disabled"}`,
