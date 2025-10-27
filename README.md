@@ -86,18 +86,12 @@ PORT=8000                                    # HTTP server port
 
 ```bash
 # ClickHouse connection URL
-# Format: clickhouse://[user[:password]@]host[:port]/database
-DATABASE_URL=clickhouse://localhost/nostr
+# Format: http://[user[:password]@]host[:port]/database
+DATABASE_URL=http://localhost:8123/nostr
 
 # Examples:
-# DATABASE_URL=clickhouse://default:password@localhost:8123/nostr
-# DATABASE_URL=clickhouse://user@clickhouse.example.com:9000/mydb
-```
-
-#### Feature Flags
-
-```bash
-NO_VERIFICATION=false                       # Disable signature verification
+# DATABASE_URL=http://default:password@localhost:8123/nostr
+# DATABASE_URL=http://user@clickhouse.example.com:8123/mydb
 ```
 
 ### Running the Server

@@ -138,9 +138,6 @@ console.log(`🔧 Initializing Nostr relay...`);
 console.log(
   `📊 Metrics: http://localhost:${config.port}/metrics`,
 );
-console.log(
-  `🔐 Verification: ${config.verification.enabled ? "enabled" : "disabled"}`,
-);
 
 const shutdown = async () => {
   console.log("Shutting down...");

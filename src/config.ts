@@ -4,17 +4,10 @@
 export class Config {
   public readonly port: number;
   public readonly databaseUrl?: string;
-  public readonly verification: {
-    enabled: boolean;
-  };
 
   constructor(env: { get(key: string): string | undefined }) {
     this.port = parseInt(env.get("PORT") || "8000");
 
     this.databaseUrl = env.get("DATABASE_URL") || undefined;
-
-    this.verification = {
-      enabled: env.get("NO_VERIFICATION") !== "false",
-    };
   }
 }

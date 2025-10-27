@@ -339,10 +339,6 @@ export class NostrRelay {
       return false;
     }
 
-    if (!this.config.verification.enabled) {
-      return true;
-    }
-
     return /^[a-f0-9]{128}$/i.test(event.sig);
   }
 }
