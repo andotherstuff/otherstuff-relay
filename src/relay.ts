@@ -1,4 +1,3 @@
-import type { Config } from "./config.ts";
 import type { ClickHouseClient } from "@clickhouse/client-web";
 import {
   eventsFailedCounter,
