@@ -15,8 +15,9 @@ const clickhouse = createClient({
 });
 
 // Initialize ClickHouse database and tables
+// Create the main events table
 await clickhouse.query({
-  query: `CREATE TABLE IF NOT EXISTS events (
+  query: `CREATE TABLE IF NOT EXISTS nostr_events (
     id String,
     pubkey String,
     created_at UInt32,
@@ -32,6 +33,21 @@ await clickhouse.query({
   PARTITION BY toYYYYMM(event_date)
   ORDER BY (kind, created_at, id)
   SETTINGS index_granularity = 8192`,
+});
+
+// Create the buffer table for batched writes
+await clickhouse.query({
+  query: `CREATE TABLE IF NOT EXISTS nostr_events_buf AS nostr_events
+  ENGINE = Buffer(
+    currentDatabase(), nostr_events,
+    16,          -- num_layers: number of buffer layers
+    10,          -- min_time: minimum time in seconds before flush
+    100,         -- max_time: maximum time in seconds before flush
+    10000,       -- min_rows: minimum rows before flush
+    1000000,     -- max_rows: maximum rows before flush
+    10000000,    -- min_bytes: minimum bytes before flush
+    100000000    -- max_bytes: maximum bytes before flush
+  )`,
 });
 
 // Instantiate relay with config and clickhouse

@@ -43,9 +43,9 @@ export class NostrRelay {
     }
 
     try {
-      // Insert event directly into ClickHouse
+      // Insert event into buffer table for batched writes
       await this.clickhouse.insert({
-        table: "events",
+        table: "nostr_events_buf",
         values: [{
           id: event.id,
           pubkey: event.pubkey,
@@ -226,7 +226,7 @@ export class NostrRelay {
         tags,
         content,
         sig
-      FROM events
+      FROM nostr_events
       ${whereClause}
       ORDER BY created_at DESC
       LIMIT {limit:UInt32}
