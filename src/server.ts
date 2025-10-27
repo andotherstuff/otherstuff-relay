@@ -38,7 +38,7 @@ await clickhouse.query({
 });
 
 // Instantiate relay with config and clickhouse
-const relay = new NostrRelay(config, clickhouse);
+const relay = new NostrRelay(clickhouse);
 
 const app = new Hono();
 

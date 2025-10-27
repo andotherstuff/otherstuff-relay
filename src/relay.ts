@@ -24,7 +24,6 @@ export class NostrRelay {
   private connectionSubs = new Map<string, Set<string>>();
 
   constructor(
-    private config: Config,
     private clickhouse: ClickHouseClient,
   ) {}
 
