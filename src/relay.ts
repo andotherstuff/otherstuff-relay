@@ -44,6 +44,7 @@ export class NostrRelay {
 
     try {
       // Insert event into buffer table for batched writes
+      // Use async_insert to batch on ClickHouse server side
       await this.clickhouse.insert({
         table: "nostr_events_buf",
         values: [{
@@ -56,6 +57,10 @@ export class NostrRelay {
           sig: event.sig,
         }],
         format: "JSONEachRow",
+        clickhouse_settings: {
+          async_insert: 1,
+          wait_for_async_insert: 0,
+        },
       });
       eventsStoredCounter.inc();
       return [true, ""];
