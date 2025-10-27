@@ -19,52 +19,9 @@ type Subscription = {
   sendEose: () => void;
 };
 
-class _RateLimiter {
-  private lastReset = Date.now();
-  private eventCount = 0;
-  private readonly maxEventsPerSecond: number;
-  private readonly maxEventsPerMinute: number;
-  private readonly minuteEvents: number[] = [];
-
-  constructor(maxPerSecond: number = 10, maxPerMinute: number = 1000) {
-    this.maxEventsPerSecond = maxPerSecond;
-    this.maxEventsPerMinute = maxPerMinute;
-  }
-
-  canPostEvent(): boolean {
-    const now = Date.now();
-
-    if (now - this.lastReset >= 1000) {
-      this.eventCount = 0;
-      this.lastReset = now;
-    }
-
-    const oneMinuteAgo = now - 60000;
-    while (
-      this.minuteEvents.length > 0 && this.minuteEvents[0] < oneMinuteAgo
-    ) {
-      this.minuteEvents.shift();
-    }
-
-    if (this.eventCount >= this.maxEventsPerSecond) {
-      return false;
-    }
-
-    if (this.minuteEvents.length >= this.maxEventsPerMinute) {
-      return false;
-    }
-
-    this.eventCount++;
-    this.minuteEvents.push(now);
-
-    return true;
-  }
-}
-
 export class NostrRelay {
   private subscriptions = new Map<string, Subscription>();
   private connectionSubs = new Map<string, Set<string>>();
-  private connectionRateLimiters = new Map<string, _RateLimiter>();
 
   constructor(
     private config: Config,
@@ -73,7 +30,6 @@ export class NostrRelay {
 
   handleEvent(
     event: NostrEvent,
-    _connId?: string,
   ): [boolean, string] {
     eventsReceivedCounter.inc();
 
@@ -180,7 +136,6 @@ export class NostrRelay {
       subs.delete(subId);
       if (subs.size === 0) {
         this.connectionSubs.delete(connId);
-        this.connectionRateLimiters.delete(connId);
       }
     }
     subscriptionsGauge.dec();
@@ -194,7 +149,6 @@ export class NostrRelay {
         subscriptionsGauge.dec();
       }
       this.connectionSubs.delete(connId);
-      this.connectionRateLimiters.delete(connId);
     }
   }
 
@@ -202,20 +156,17 @@ export class NostrRelay {
     status: string;
     subscriptions: number;
     connections: number;
-    rateLimiters: number;
   } {
     return {
       status: "ok",
       subscriptions: this.subscriptions.size,
       connections: this.connectionSubs.size,
-      rateLimiters: this.connectionRateLimiters.size,
     };
   }
 
   async close(): Promise<void> {
     this.subscriptions.clear();
     this.connectionSubs.clear();
-    this.connectionRateLimiters.clear();
     await this.clickhouse.close();
   }
 

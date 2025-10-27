@@ -31,13 +31,6 @@ export const eventsFailedCounter = new Counter({
   registers: [register],
 });
 
-// Counter for events rate limited
-export const eventsRateLimitedCounter = new Counter({
-  name: "nostr_events_rate_limited",
-  help: "Total events rate limited",
-  registers: [register],
-});
-
 // Counter for invalid events
 export const eventsInvalidCounter = new Counter({
   name: "nostr_events_invalid",

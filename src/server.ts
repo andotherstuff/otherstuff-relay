@@ -76,7 +76,7 @@ app.get("/", (c) => {
       switch (msg[0]) {
         case "EVENT": {
           const event = msg[1];
-          const [ok, message] = await relay.handleEvent(event, connId);
+          const [ok, message] = await relay.handleEvent(event);
           send(["OK", event.id, ok, message]);
           break;
         }
