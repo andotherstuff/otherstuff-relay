@@ -1,5 +1,5 @@
 import type { Config } from "./config.ts";
-import type { ClickHouseClient } from "./clickhouse.ts";
+import type { ClickHouseClient } from "@clickhouse/client-web";
 import {
   eventsFailedCounter,
   eventsInvalidCounter,
@@ -70,10 +70,6 @@ export class NostrRelay {
     private config: Config,
     private clickhouse: ClickHouseClient,
   ) {}
-
-  async init(): Promise<void> {
-    await this.clickhouse.initDatabase();
-  }
 
   async handleEvent(
     event: NostrEvent,

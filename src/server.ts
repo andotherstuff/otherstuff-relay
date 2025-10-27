@@ -1,7 +1,7 @@
 import { Hono } from "hono";
+import { createClient } from "@clickhouse/client-web";
 import { Config } from "./config.ts";
 import { NostrRelay } from "./relay.ts";
-import { ClickHouseClient } from "./clickhouse.ts";
 import { connectionsGauge, getMetrics, register } from "./metrics.ts";
 import type {
   NostrClientMsg,
@@ -13,12 +13,32 @@ import type {
 const config = new Config(Deno.env);
 
 // Instantiate ClickHouse client with config
-const clickhouse = new ClickHouseClient(config);
+const clickhouse = createClient({
+  url: config.databaseUrl,
+});
+
+// Initialize ClickHouse database and tables
+await clickhouse.query({
+  query: `CREATE TABLE IF NOT EXISTS events (
+    id String,
+    pubkey String,
+    created_at DateTime64(3),
+    kind UInt32,
+    tags Array(Array(String)),
+    content String,
+    sig String,
+    event_date Date MATERIALIZED toDate(created_at),
+    INDEX idx_pubkey pubkey TYPE bloom_filter GRANULARITY 1,
+    INDEX idx_kind kind TYPE minmax GRANULARITY 1,
+    INDEX idx_created_at created_at TYPE minmax GRANULARITY 1
+  ) ENGINE = MergeTree()
+  PARTITION BY toYYYYMM(event_date)
+  ORDER BY (kind, created_at, id)
+  SETTINGS index_granularity = 8192`,
+});
 
 // Instantiate relay with config and clickhouse
 const relay = new NostrRelay(config, clickhouse);
-
-await relay.init();
 
 const app = new Hono();
 

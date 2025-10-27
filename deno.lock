@@ -5,6 +5,7 @@
     "jsr:@nostrify/types@0.36": "0.36.0",
     "jsr:@scure/base@^1.2.4": "1.2.6",
     "jsr:@std/encoding@~0.224.1": "0.224.3",
+    "npm:@clickhouse/client-web@^1.12.1": "1.12.1",
     "npm:hono@^4.10.3": "4.10.3",
     "npm:lru-cache@^10.2.0": "10.4.3",
     "npm:nostr-tools@^2.13.0": "2.16.2",
@@ -37,6 +38,15 @@
     }
   },
   "npm": {
+    "@clickhouse/client-common@1.12.1": {
+      "integrity": "sha512-ccw1N6hB4+MyaAHIaWBwGZ6O2GgMlO99FlMj0B0UEGfjxM9v5dYVYql6FpP19rMwrVAroYs/IgX2vyZEBvzQLg=="
+    },
+    "@clickhouse/client-web@1.12.1": {
+      "integrity": "sha512-r4FbR0ShxwZ9lt2tE4uvL7Pu5y6jjoU0TX1DsKvhiERvfTIZeSWB1pwbu3hEHBNK9IzvArgAeA2gdVMiFxNArg==",
+      "dependencies": [
+        "@clickhouse/client-common"
+      ]
+    },
     "@noble/ciphers@0.5.3": {
       "integrity": "sha512-B0+6IIHiqEs3BPMT0hcRmHvEj2QHOLu+uwt+tqDDeVd0oyVzh7BPrDcPjRnV1PV/5LaknXJJQvOuRGR0zQJz+w=="
     },
@@ -167,6 +177,7 @@
   "workspace": {
     "dependencies": [
       "jsr:@nostrify/nostrify@~0.46.5",
+      "npm:@clickhouse/client-web@^1.12.1",
       "npm:hono@^4.10.3",
       "npm:prom-client@^15.1.0"
     ]
