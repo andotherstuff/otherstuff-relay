@@ -63,7 +63,10 @@ class EventBuffer {
       await insertBatch(eventsToProcess);
       console.log(`✅ Batch inserted: ${batchSize} events`);
     } catch (error) {
-      console.error(`❌ Batch failed (${batchSize} events):`, error.message);
+      console.error(
+        `❌ Batch failed (${batchSize} events):`,
+        error instanceof Error ? error.message : String(error),
+      );
     } finally {
       this.isProcessing = false;
       this.processingQueue--;

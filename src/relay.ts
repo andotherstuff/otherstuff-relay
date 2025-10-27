@@ -1,5 +1,13 @@
 import { initDatabase, insertEvent, queryEvents } from "./clickhouse.ts";
-import { metrics } from "./metrics.ts";
+import {
+  eventsFailedCounter,
+  eventsInvalidCounter,
+  eventsReceivedCounter,
+  eventsRejectedCounter,
+  eventsStoredCounter,
+  queriesCounter,
+  subscriptionsGauge,
+} from "./metrics.ts";
 import { config } from "./config.ts";
 import type { Event, Filter } from "./types.ts";
 
@@ -63,24 +71,24 @@ export class NostrRelay {
   }
 
   async handleEvent(event: Event, connId?: string): Promise<[boolean, string]> {
-    metrics.events.received();
+    eventsReceivedCounter.inc();
 
     if (!this.isValidEvent(event)) {
-      metrics.events.invalid();
+      eventsInvalidCounter.inc();
       return [false, "invalid: event validation failed"];
     }
 
     if (JSON.stringify(event).length > 500000) {
-      metrics.events.rejected();
+      eventsRejectedCounter.inc();
       return [false, "rejected: event too large"];
     }
 
     (async () => {
       const success = await insertEvent(event);
       if (success) {
-        metrics.events.stored();
+        eventsStoredCounter.inc();
       } else {
-        metrics.events.failed();
+        eventsFailedCounter.inc();
       }
     })();
 
@@ -94,8 +102,8 @@ export class NostrRelay {
     sendEvent: (event: Event) => void,
     sendEose: () => void,
   ): Promise<void> {
-    metrics.subscriptions.inc();
-    metrics.queries.inc();
+    subscriptionsGauge.inc();
+    queriesCounter.inc();
 
     const connSubs = this.connectionSubs.get(connId);
     if (connSubs && connSubs.size >= 10) {
@@ -157,7 +165,7 @@ export class NostrRelay {
         this.connectionRateLimiters.delete(connId);
       }
     }
-    metrics.subscriptions.dec();
+    subscriptionsGauge.dec();
   }
 
   handleDisconnect(connId: string): void {
@@ -165,10 +173,10 @@ export class NostrRelay {
     if (subs) {
       for (const subId of subs) {
         this.subscriptions.delete(subId);
+        subscriptionsGauge.dec();
       }
       this.connectionSubs.delete(connId);
       this.connectionRateLimiters.delete(connId);
-      metrics.subscriptions.dec();
     }
   }
 

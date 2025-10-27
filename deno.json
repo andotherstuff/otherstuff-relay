@@ -2,6 +2,9 @@
   "compilerOptions": {
     "lib": ["deno.window"]
   },
+  "imports": {
+    "prom-client": "npm:prom-client@^15.1.0"
+  },
   "lint": {
     "rules": {
       "tags": ["recommended"]

@@ -2,7 +2,7 @@ import { Hono } from "https://deno.land/x/hono@v3.12.11/mod.ts";
 import { NostrRelay } from "./relay.ts";
 import { shutdown as clickhouseShutdown } from "./clickhouse.ts";
 import { config } from "./config.ts";
-import { getMetrics, metrics } from "./metrics.ts";
+import { connectionsGauge, getMetrics, register } from "./metrics.ts";
 import type { ClientMessage, Event, RelayMessage } from "./types.ts";
 
 const app = new Hono();
@@ -13,8 +13,9 @@ await relay.init();
 // Metrics endpoint
 if (config.metrics.enabled) {
   app.get(config.metrics.path, async (c) => {
-    return c.text(await getMetrics(), 200, {
-      "Content-Type": "text/plain; version=0.0.4",
+    const metricsText = await getMetrics();
+    return c.text(metricsText, 200, {
+      "Content-Type": register.contentType,
     });
   });
 }
@@ -35,7 +36,7 @@ app.get("/", (c) => {
   const connId = crypto.randomUUID();
 
   socket.onopen = () => {
-    metrics.connections.inc();
+    connectionsGauge.inc();
   };
 
   socket.onmessage = async (e) => {
@@ -78,7 +79,7 @@ app.get("/", (c) => {
   };
 
   socket.onclose = () => {
-    metrics.connections.dec();
+    connectionsGauge.dec();
     relay.handleDisconnect(connId);
   };
 

@@ -1,80 +1,71 @@
-let connections = 0;
-let eventsReceived = 0;
-let eventsStored = 0;
-let eventsFailed = 0;
-let eventsRateLimited = 0;
-let eventsInvalid = 0;
-let eventsRejected = 0;
-let queries = 0;
-let subscriptions = 0;
+import { Counter, Gauge, Registry } from "prom-client";
 
-export const metrics = {
-  connections: {
-    inc: () => connections++,
-    dec: () => connections--,
-    get: () => connections,
-  },
-  events: {
-    received: () => eventsReceived++,
-    stored: () => eventsStored++,
-    failed: () => eventsFailed++,
-    rateLimited: () => eventsRateLimited++,
-    invalid: () => eventsInvalid++,
-    rejected: () => eventsRejected++,
-    getReceived: () => eventsReceived,
-    getStored: () => eventsStored,
-    getFailed: () => eventsFailed,
-    getRateLimited: () => eventsRateLimited,
-    getInvalid: () => eventsInvalid,
-    getRejected: () => eventsRejected,
-  },
-  queries: {
-    inc: () => queries++,
-    get: () => queries,
-  },
-  subscriptions: {
-    inc: () => subscriptions++,
-    dec: () => subscriptions--,
-    get: () => subscriptions,
-  },
-};
+// Create a custom registry
+export const register = new Registry();
+
+// Gauge for active connections
+export const connectionsGauge = new Gauge({
+  name: "nostr_connections_active",
+  help: "Current WebSocket connections",
+  registers: [register],
+});
+
+// Counter for events received
+export const eventsReceivedCounter = new Counter({
+  name: "nostr_events_received",
+  help: "Total events received",
+  registers: [register],
+});
+
+// Counter for events stored
+export const eventsStoredCounter = new Counter({
+  name: "nostr_events_stored",
+  help: "Total events successfully stored",
+  registers: [register],
+});
+
+// Counter for events failed
+export const eventsFailedCounter = new Counter({
+  name: "nostr_events_failed",
+  help: "Total events failed to store",
+  registers: [register],
+});
+
+// Counter for events rate limited
+export const eventsRateLimitedCounter = new Counter({
+  name: "nostr_events_rate_limited",
+  help: "Total events rate limited",
+  registers: [register],
+});
+
+// Counter for invalid events
+export const eventsInvalidCounter = new Counter({
+  name: "nostr_events_invalid",
+  help: "Total events invalid",
+  registers: [register],
+});
+
+// Counter for rejected events
+export const eventsRejectedCounter = new Counter({
+  name: "nostr_events_rejected",
+  help: "Total events rejected",
+  registers: [register],
+});
+
+// Counter for queries
+export const queriesCounter = new Counter({
+  name: "nostr_queries_total",
+  help: "Total queries processed",
+  registers: [register],
+});
+
+// Gauge for active subscriptions
+export const subscriptionsGauge = new Gauge({
+  name: "nostr_subscriptions_active",
+  help: "Current active subscriptions",
+  registers: [register],
+});
 
 export async function getMetrics(): Promise<string> {
-  return `
-# HELP nostr_connections_active Current WebSocket connections
-# TYPE nostr_connections_active gauge
-nostr_connections_active ${connections}
-
-# HELP nostr_events_received Total events received
-# TYPE nostr_events_received counter
-nostr_events_received ${eventsReceived}
-
-# HELP nostr_events_stored Total events successfully stored
-# TYPE nostr_events_stored counter
-nostr_events_stored ${eventsStored}
-
-# HELP nostr_events_failed Total events failed to store
-# TYPE nostr_events_failed counter
-nostr_events_failed ${eventsFailed}
-
-# HELP nostr_events_rate_limited Total events rate limited
-# TYPE nostr_events_rate_limited counter
-nostr_events_rate_limited ${eventsRateLimited}
-
-# HELP nostr_events_invalid Total events invalid
-# TYPE nostr_events_invalid counter
-nostr_events_invalid ${eventsInvalid}
-
-# HELP nostr_events_rejected Total events rejected
-# TYPE nostr_events_rejected counter
-nostr_events_rejected ${eventsRejected}
-
-# HELP nostr_queries_total Total queries processed
-# TYPE nostr_queries_total counter
-nostr_queries_total ${queries}
-
-# HELP nostr_subscriptions_active Current active subscriptions
-# TYPE nostr_subscriptions_active gauge
-nostr_subscriptions_active ${subscriptions}
-  `.trim();
+  return await register.metrics();
 }

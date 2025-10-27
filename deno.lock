@@ -1,5 +1,29 @@
 {
   "version": "5",
+  "specifiers": {
+    "npm:prom-client@^15.1.0": "15.1.3"
+  },
+  "npm": {
+    "@opentelemetry/api@1.9.0": {
+      "integrity": "sha512-3giAOQvZiH5F9bMlMiv8+GSPMeqg0dbaeo58/0SlA9sxSqZhnUtxzX9/2FzyhS9sWQf5S0GJE0AKBrFqjpeYcg=="
+    },
+    "bintrees@1.0.2": {
+      "integrity": "sha512-VOMgTMwjAaUG580SXn3LacVgjurrbMme7ZZNYGSSV7mmtY6QQRh0Eg3pwIcntQ77DErK1L0NxkbetjcoXzVwKw=="
+    },
+    "prom-client@15.1.3": {
+      "integrity": "sha512-6ZiOBfCywsD4k1BN9IX0uZhF+tJkV8q8llP64G5Hajs4JOeVLPCwpPVcpXy3BwYiUGgyJzsJJQeOIv7+hDSq8g==",
+      "dependencies": [
+        "@opentelemetry/api",
+        "tdigest"
+      ]
+    },
+    "tdigest@0.1.2": {
+      "integrity": "sha512-+G0LLgjjo9BZX2MfdvPfH+MKLCrxlXSYec5DaPYP1fe6Iyhf0/fSmJ0bFiZ1F8BT6cGXl2LpltQptzjXKWEkKA==",
+      "dependencies": [
+        "bintrees"
+      ]
+    }
+  },
   "remote": {
     "https://deno.land/x/hono@v3.12.11/client/client.ts": "adbae39c26aa53d61a6eb77ab6b758ab1f2c30c443661cd64bb401d643212e79",
     "https://deno.land/x/hono@v3.12.11/client/index.ts": "30def535310a37bede261f1b23d11a9758983b8e9d60a6c56309cee5f6746ab2",
@@ -40,5 +64,10 @@
     "https://deno.land/x/hono@v3.12.11/utils/url.ts": "d9d307a495e7dfc6e916fbcfa74c2d8d23e8e685bddc5e6ebc9c0f784345a01a",
     "https://deno.land/x/hono@v3.12.11/validator/index.ts": "6c986e8b91dcf857ecc8164a506ae8eea8665792a4ff7215471df669c632ae7c",
     "https://deno.land/x/hono@v3.12.11/validator/validator.ts": "97fead75b1e3e460d0895d68eab2be6d774f6d1428e2efb8b4df8ba8bb422c3e"
+  },
+  "workspace": {
+    "dependencies": [
+      "npm:prom-client@^15.1.0"
+    ]
   }
 }

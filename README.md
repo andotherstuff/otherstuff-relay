@@ -11,7 +11,7 @@ This relay server combines the lightweight efficiency of Deno with the analytica
 - **Deno Runtime**: Modern JavaScript/TypeScript runtime with native HTTP server capabilities
 - **ClickHouse Database**: Columnar database optimized for time-series event storage and analytical queries
 - **WebSocket Protocol**: Real-time bidirectional communication with Nostr clients
-- **Prometheus Metrics**: Comprehensive monitoring and performance tracking
+- **Prometheus Metrics**: Comprehensive monitoring and performance tracking using prom-client
 
 ## Features
 
@@ -27,7 +27,7 @@ This relay server combines the lightweight efficiency of Deno with the analytica
 - **Error Handling**: Comprehensive error recovery and logging for operational visibility
 
 ### Observability
-- **Prometheus Metrics**: Detailed performance counters for monitoring and alerting
+- **Prometheus Metrics**: Industry-standard metrics using prom-client library for monitoring and alerting
 - **Health Endpoints**: Real-time system status and diagnostic information
 - **Structured Logging**: Clear, actionable log messages for troubleshooting
 
