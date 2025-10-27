@@ -43,10 +43,10 @@ export class NostrRelay {
     }
 
     try {
-      // Insert event into buffer table for batched writes
-      // Use async_insert to batch on ClickHouse server side
+      // Use async_insert to batch inserts on ClickHouse server side
+      // This replaces the need for a separate buffer table
       await this.clickhouse.insert({
-        table: "nostr_events_buf",
+        table: "nostr_events",
         values: [{
           id: event.id,
           pubkey: event.pubkey,
