@@ -25,6 +25,8 @@ export class NostrRelay {
 
   constructor(
     private clickhouse: ClickHouseClient,
+    // deno-lint-ignore no-explicit-any
+    private redis: any,
   ) {}
 
   async handleEvent(
@@ -43,31 +45,14 @@ export class NostrRelay {
     }
 
     try {
-      // Use async_insert to batch inserts on ClickHouse server side
-      // This replaces the need for a separate buffer table
-      await this.clickhouse.insert({
-        table: "nostr_events",
-        values: [{
-          id: event.id,
-          pubkey: event.pubkey,
-          created_at: event.created_at,
-          kind: event.kind,
-          tags: event.tags,
-          content: event.content,
-          sig: event.sig,
-        }],
-        format: "JSONEachRow",
-        clickhouse_settings: {
-          async_insert: 1,
-          wait_for_async_insert: 0,
-        },
-      });
+      // Push event to Redis queue for batch processing by worker
+      await this.redis.lPush("nostr:events:queue", JSON.stringify(event));
       eventsStoredCounter.inc();
       return [true, ""];
     } catch (error) {
       eventsFailedCounter.inc();
-      console.error("Failed to store event:", error);
-      return [false, "error: failed to store event"];
+      console.error("Failed to queue event:", error);
+      return [false, "error: failed to queue event"];
     }
   }
 
@@ -169,6 +154,7 @@ export class NostrRelay {
   async close(): Promise<void> {
     this.subscriptions.clear();
     this.connectionSubs.clear();
+    await this.redis.quit();
     await this.clickhouse.close();
   }
 

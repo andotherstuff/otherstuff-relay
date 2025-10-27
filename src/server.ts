@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { NSchema as n } from "@nostrify/nostrify";
 import { createClient } from "@clickhouse/client-web";
+import { createClient as createRedisClient } from "redis";
 import { Config } from "./config.ts";
 import { NostrRelay } from "./relay.ts";
 import { connectionsGauge, getMetrics, register } from "./metrics.ts";
@@ -35,8 +36,14 @@ await clickhouse.query({
   SETTINGS index_granularity = 8192`,
 });
 
-// Instantiate relay with config and clickhouse
-const relay = new NostrRelay(clickhouse);
+// Instantiate Redis client
+const redis = createRedisClient({
+  url: config.redisUrl,
+});
+await redis.connect();
+
+// Instantiate relay with config, clickhouse, and redis
+const relay = new NostrRelay(clickhouse, redis);
 
 const app = new Hono();
 

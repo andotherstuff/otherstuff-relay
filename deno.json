@@ -1,12 +1,15 @@
 {
   "tasks": {
-    "start": "deno serve -A --env-file src/server.ts"
+    "start": "deno run -A --env-file src/start.ts",
+    "server": "deno serve -A --env-file src/server.ts",
+    "worker": "deno run -A --env-file src/worker.ts"
   },
   "imports": {
     "@clickhouse/client-web": "npm:@clickhouse/client-web@^1.12.1",
     "@nostrify/nostrify": "jsr:@nostrify/nostrify@^0.46.5",
     "hono": "npm:hono@^4.10.3",
     "nostr-tools": "npm:nostr-tools@^2.17.1",
-    "prom-client": "npm:prom-client@^15.1.0"
+    "prom-client": "npm:prom-client@^15.1.0",
+    "redis": "npm:redis@^5.9.0"
   }
 }
