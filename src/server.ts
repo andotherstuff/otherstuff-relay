@@ -1,10 +1,12 @@
 import { Hono } from "hono";
 import { NSchema as n } from "@nostrify/nostrify";
 import { createClient } from "@clickhouse/client-web";
+import { createClient as createRedisClient } from "redis";
 import { Config } from "./config.ts";
 import { NostrRelay } from "./relay.ts";
 import { connectionsGauge, getMetrics, register } from "./metrics.ts";
-import type { NostrEvent, NostrRelayMsg } from "@nostrify/nostrify";
+import type { NostrEvent, NostrFilter, NostrRelayMsg } from "@nostrify/nostrify";
+import type { RedisClientType } from "redis";
 
 // Instantiate config with Deno.env
 const config = new Config(Deno.env);
@@ -34,8 +36,16 @@ await clickhouse.query({
   SETTINGS index_granularity = 8192`,
 });
 
-// Instantiate relay with config and clickhouse
-const relay = new NostrRelay(clickhouse);
+// Create Redis publisher client (shared across all connections)
+const redisPublisher = createRedisClient({
+  url: config.redisUrl,
+}) as RedisClientType;
+
+await redisPublisher.connect();
+console.log("✅ Connected to Redis");
+
+// Instantiate relay with config, clickhouse, and redis
+const relay = new NostrRelay(clickhouse, redisPublisher);
 
 const app = new Hono();
 
@@ -48,8 +58,25 @@ app.get("/metrics", async (c) => {
 });
 
 // Health endpoint
-app.get("/health", (c) => {
-  return c.json(relay.health());
+app.get("/health", async (c) => {
+  try {
+    // Check ClickHouse connection
+    await clickhouse.ping();
+    
+    // Check Redis connection
+    await redisPublisher.ping();
+
+    return c.json({
+      status: "ok",
+      clickhouse: "connected",
+      redis: "connected",
+    });
+  } catch (error) {
+    return c.json({
+      status: "error",
+      error: error instanceof Error ? error.message : "Unknown error",
+    }, 500);
+  }
 });
 
 // WebSocket endpoint
@@ -60,10 +87,42 @@ app.get("/", (c) => {
   }
 
   const { socket, response } = Deno.upgradeWebSocket(c.req.raw);
-  const connId = crypto.randomUUID();
+  
+  // Create a dedicated Redis subscriber for this connection
+  let redisSubscriber: RedisClientType | null = null;
+  const subscriptions = new Map<string, NostrFilter[]>();
+  const maxSubs = 20; // Max subscriptions per connection
+
+  const setupRedisSubscriber = async () => {
+    redisSubscriber = createRedisClient({
+      url: config.redisUrl,
+    }) as RedisClientType;
+
+    await redisSubscriber.connect();
+
+    // Subscribe to the events channel
+    await redisSubscriber.subscribe("nostr:events", (message) => {
+      try {
+        const event = JSON.parse(message) as NostrEvent;
+        
+        // Check if event matches any active subscription
+        for (const [subId, filters] of subscriptions.entries()) {
+          if (NostrRelay.matchesFilters(event, filters)) {
+            send(["EVENT", subId, event]);
+          }
+        }
+      } catch (error) {
+        console.error("Error processing Redis message:", error);
+      }
+    });
+  };
 
   socket.onopen = () => {
     connectionsGauge.inc();
+    setupRedisSubscriber().catch((error) => {
+      console.error("Failed to setup Redis subscriber:", error);
+      socket.close();
+    });
   };
 
   socket.onmessage = async (e) => {
@@ -80,19 +139,34 @@ app.get("/", (c) => {
 
         case "REQ": {
           const [_, subId, ...filters] = msg;
+          
+          // Check subscription limit
+          if (subscriptions.size >= maxSubs) {
+            send(["CLOSED", subId, "error: too many subscriptions"]);
+            break;
+          }
+
+          // Store subscription filters for real-time matching
+          subscriptions.set(subId, filters);
+
+          // Query historical events and send EOSE
           await relay.handleReq(
-            connId,
             subId,
             filters,
             (event: NostrEvent) => send(["EVENT", subId, event]),
             () => send(["EOSE", subId]),
           );
+          
+          // Real-time events will be delivered via Redis pub/sub
           break;
         }
 
         case "CLOSE": {
           const [_, subId] = msg;
-          relay.handleClose(connId, subId);
+          if (subscriptions.has(subId)) {
+            subscriptions.delete(subId);
+            relay.handleClose();
+          }
           break;
         }
 
@@ -105,9 +179,24 @@ app.get("/", (c) => {
     }
   };
 
-  socket.onclose = () => {
+  socket.onclose = async () => {
     connectionsGauge.dec();
-    relay.handleDisconnect(connId);
+    
+    // Clean up subscriptions
+    for (const _subId of subscriptions.keys()) {
+      relay.handleClose();
+    }
+    subscriptions.clear();
+
+    // Disconnect Redis subscriber
+    if (redisSubscriber) {
+      try {
+        await redisSubscriber.unsubscribe("nostr:events");
+        await redisSubscriber.quit();
+      } catch (error) {
+        console.error("Error closing Redis subscriber:", error);
+      }
+    }
   };
 
   socket.onerror = (err) => {
@@ -132,13 +221,13 @@ app.get("/", (c) => {
 });
 
 console.log(`🔧 Initializing Nostr relay...`);
-console.log(
-  `📊 Metrics: http://localhost:${config.port}/metrics`,
-);
+console.log(`📊 Metrics: http://localhost:${config.port}/metrics`);
+console.log(`🚀 Server ready on port ${config.port}`);
 
 const shutdown = async () => {
   console.log("Shutting down...");
   await relay.close();
+  await redisPublisher.quit();
   Deno.exit(0);
 };
 

@@ -16,6 +16,7 @@ simplicity.
   capabilities
 - **ClickHouse Database**: Columnar database optimized for time-series event
   storage and analytical queries
+- **Redis Pub/Sub**: Real-time event distribution for live subscriptions (NIP-01)
 - **WebSocket Protocol**: Real-time bidirectional communication with Nostr
   clients
 - **Prometheus Metrics**: Comprehensive monitoring and performance tracking
@@ -56,6 +57,7 @@ simplicity.
 
 - **Deno** 1.40 or later
 - **ClickHouse** server (local or remote)
+- **Redis** server (local or remote) for real-time subscriptions
 
 ### Installation
 
@@ -92,6 +94,19 @@ DATABASE_URL=http://localhost:8123/nostr
 # Examples:
 # DATABASE_URL=http://default:password@localhost:8123/nostr
 # DATABASE_URL=http://user@clickhouse.example.com:8123/mydb
+```
+
+#### Redis Configuration
+
+```bash
+# Redis connection URL for real-time subscriptions
+# Format: redis://[user[:password]@]host[:port][/database]
+REDIS_URL=redis://localhost:6379
+
+# Examples:
+# REDIS_URL=redis://localhost:6379
+# REDIS_URL=redis://:password@localhost:6379
+# REDIS_URL=redis://user:password@redis.example.com:6379/0
 ```
 
 ### Running the Server
@@ -132,12 +147,44 @@ ORDER BY (kind, created_at, id)
 SETTINGS index_granularity = 8192
 ```
 
+## Real-Time Subscriptions (NIP-01)
+
+This relay implements NIP-01 subscriptions using Redis pub/sub for efficient
+real-time event delivery:
+
+### How It Works
+
+1. **Client subscribes** via `REQ` message with filters
+2. **Historical events** are queried from ClickHouse and sent immediately
+3. **EOSE** (End of Stored Events) is sent after historical data
+4. **New events** matching the filters are delivered in real-time via Redis
+   pub/sub
+5. Each WebSocket connection maintains its own Redis subscriber with up to 20
+   active subscriptions
+
+### Event Flow
+
+```
+Client EVENT → Relay → ClickHouse (store) → Redis Publish
+                                                    ↓
+Client REQ → Historical Query (ClickHouse) → EOSE → Redis Subscribe → Real-time Events
+```
+
+### Benefits
+
+- **No in-memory state**: Subscriptions are stateless and scale horizontally
+- **Real-time delivery**: Sub-millisecond latency for new events
+- **Filter matching**: Events are filtered per-connection based on active
+  subscriptions
+- **Resource efficient**: Redis handles pub/sub distribution across multiple
+  relay instances
+
 ## API Endpoints
 
 ### WebSocket Endpoint
 
 - **URL**: `ws://localhost:8000/`
-- **Protocol**: Nostr WebSocket protocol
+- **Protocol**: Nostr WebSocket protocol (NIP-01)
 - **Purpose**: Real-time event streaming and client communication
 
 ### Health Check
@@ -178,10 +225,8 @@ SETTINGS index_granularity = 8192
 
 ```
 src/
-├── server.ts      # HTTP server and WebSocket handling
-├── relay.ts       # Nostr protocol logic and subscription management
-├── clickhouse.ts  # Database operations and schema management
-├── types.ts       # TypeScript type definitions
+├── server.ts      # HTTP server, WebSocket handling, and Redis pub/sub
+├── relay.ts       # Nostr protocol logic and event processing
 ├── config.ts      # Environment configuration
 └── metrics.ts     # Prometheus metrics collection
 ```
@@ -205,6 +250,8 @@ src/
 
 ### Docker Deployment
 
+Create a `Dockerfile`:
+
 ```dockerfile
 FROM denoland/deno:latest
 WORKDIR /app
@@ -213,12 +260,55 @@ EXPOSE 8000
 CMD ["deno", "task", "start"]
 ```
 
+### Docker Compose Example
+
+Create a `docker-compose.yml` for a complete stack:
+
+```yaml
+version: '3.8'
+
+services:
+  relay:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - DATABASE_URL=http://clickhouse:8123/nostr
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - clickhouse
+      - redis
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+volumes:
+  clickhouse_data:
+  redis_data:
+```
+
 ### Production Considerations
 
 - **Reverse Proxy**: Use Nginx or similar for SSL termination
 - **Monitoring**: Configure Prometheus and Grafana for metrics visualization
 - **Logging**: Implement centralized log aggregation
 - **Backups**: Regular ClickHouse data backups for disaster recovery
+- **Redis Persistence**: Configure Redis AOF or RDB for pub/sub reliability
+- **Horizontal Scaling**: Multiple relay instances can share the same
+  ClickHouse and Redis backends
 
 ## License
 

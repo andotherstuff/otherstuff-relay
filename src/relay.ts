@@ -10,21 +10,17 @@ import {
 } from "./metrics.ts";
 import type { ClickHouseClient } from "@clickhouse/client-web";
 import type { NostrEvent, NostrFilter } from "@nostrify/nostrify";
+import type { RedisClientType } from "redis";
 
 type Subscription = {
-  connId: string;
   subId: string;
   filters: NostrFilter[];
-  sendEvent: (event: NostrEvent) => void;
-  sendEose: () => void;
 };
 
 export class NostrRelay {
-  private subscriptions = new Map<string, Subscription>();
-  private connectionSubs = new Map<string, Set<string>>();
-
   constructor(
     private clickhouse: ClickHouseClient,
+    private redisPublisher: RedisClientType,
   ) {}
 
   async handleEvent(
@@ -58,6 +54,14 @@ export class NostrRelay {
         format: "JSONEachRow",
       });
       eventsStoredCounter.inc();
+
+      // Publish event to Redis for real-time delivery
+      // Use a single channel for all events - subscribers will filter
+      await this.redisPublisher.publish(
+        "nostr:events",
+        JSON.stringify(event),
+      );
+
       return [true, ""];
     } catch (error) {
       eventsFailedCounter.inc();
@@ -67,8 +71,7 @@ export class NostrRelay {
   }
 
   async handleReq(
-    connId: string,
-    subId: string,
+    _subId: string,
     filters: NostrFilter[],
     sendEvent: (event: NostrEvent) => void,
     sendEose: () => void,
@@ -76,29 +79,11 @@ export class NostrRelay {
     subscriptionsGauge.inc();
     queriesCounter.inc();
 
-    const connSubs = this.connectionSubs.get(connId);
-    if (connSubs && connSubs.size >= 10) {
-      sendEose();
-      return;
-    }
-
     if (filters.length > 10) {
       filters = filters.slice(0, 10);
     }
 
-    this.subscriptions.set(subId, {
-      connId,
-      subId,
-      filters,
-      sendEvent,
-      sendEose,
-    });
-
-    if (!this.connectionSubs.has(connId)) {
-      this.connectionSubs.set(connId, new Set());
-    }
-    this.connectionSubs.get(connId)!.add(subId);
-
+    // Query historical events from ClickHouse
     const queryPromises = filters.map(async (filter) => {
       try {
         const events = await this.queryEvents(filter);
@@ -123,47 +108,15 @@ export class NostrRelay {
       console.error("Query timeout or error:", error);
     }
 
+    // Send EOSE after historical events are delivered
     sendEose();
   }
 
-  handleClose(connId: string, subId: string): void {
-    this.subscriptions.delete(subId);
-    const subs = this.connectionSubs.get(connId);
-    if (subs) {
-      subs.delete(subId);
-      if (subs.size === 0) {
-        this.connectionSubs.delete(connId);
-      }
-    }
+  handleClose(): void {
     subscriptionsGauge.dec();
   }
 
-  handleDisconnect(connId: string): void {
-    const subs = this.connectionSubs.get(connId);
-    if (subs) {
-      for (const subId of subs) {
-        this.subscriptions.delete(subId);
-        subscriptionsGauge.dec();
-      }
-      this.connectionSubs.delete(connId);
-    }
-  }
-
-  health(): {
-    status: string;
-    subscriptions: number;
-    connections: number;
-  } {
-    return {
-      status: "ok",
-      subscriptions: this.subscriptions.size,
-      connections: this.connectionSubs.size,
-    };
-  }
-
   async close(): Promise<void> {
-    this.subscriptions.clear();
-    this.connectionSubs.clear();
     await this.clickhouse.close();
   }
 
@@ -257,5 +210,66 @@ export class NostrRelay {
       content: row.content,
       sig: row.sig,
     }));
+  }
+
+  /**
+   * Check if an event matches any of the subscription filters
+   */
+  static matchesFilters(event: NostrEvent, filters: NostrFilter[]): boolean {
+    return filters.some((filter) => this.matchesFilter(event, filter));
+  }
+
+  /**
+   * Check if an event matches a single filter
+   */
+  private static matchesFilter(
+    event: NostrEvent,
+    filter: NostrFilter,
+  ): boolean {
+    // Check IDs
+    if (filter.ids && filter.ids.length > 0) {
+      if (!filter.ids.some((id) => event.id.startsWith(id))) {
+        return false;
+      }
+    }
+
+    // Check authors
+    if (filter.authors && filter.authors.length > 0) {
+      if (!filter.authors.some((author) => event.pubkey.startsWith(author))) {
+        return false;
+      }
+    }
+
+    // Check kinds
+    if (filter.kinds && filter.kinds.length > 0) {
+      if (!filter.kinds.includes(event.kind)) {
+        return false;
+      }
+    }
+
+    // Check since
+    if (filter.since !== undefined && event.created_at < filter.since) {
+      return false;
+    }
+
+    // Check until
+    if (filter.until !== undefined && event.created_at > filter.until) {
+      return false;
+    }
+
+    // Check tag filters
+    for (const [key, values] of Object.entries(filter)) {
+      if (key.startsWith("#") && Array.isArray(values) && values.length > 0) {
+        const tagName = key.substring(1);
+        const hasMatchingTag = event.tags.some(
+          (tag) => tag[0] === tagName && values.includes(tag[1]),
+        );
+        if (!hasMatchingTag) {
+          return false;
+        }
+      }
+    }
+
+    return true;
   }
 }
