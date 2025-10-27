@@ -1,4 +1,5 @@
-import { initDatabase, insertEvent, queryEvents } from "./clickhouse.ts";
+import type { Config } from "./config.ts";
+import type { ClickHouseClient } from "./clickhouse.ts";
 import {
   eventsFailedCounter,
   eventsInvalidCounter,
@@ -8,7 +9,6 @@ import {
   queriesCounter,
   subscriptionsGauge,
 } from "./metrics.ts";
-import { config } from "./config.ts";
 import type { NostrEvent, NostrFilter } from "@nostrify/nostrify";
 
 type Subscription = {
@@ -66,8 +66,13 @@ export class NostrRelay {
   private connectionSubs = new Map<string, Set<string>>();
   private connectionRateLimiters = new Map<string, RateLimiter>();
 
+  constructor(
+    private config: Config,
+    private clickhouse: ClickHouseClient,
+  ) {}
+
   async init(): Promise<void> {
-    await initDatabase();
+    await this.clickhouse.initDatabase();
   }
 
   async handleEvent(
@@ -87,7 +92,7 @@ export class NostrRelay {
     }
 
     (async () => {
-      const success = await insertEvent(event);
+      const success = await this.clickhouse.insertEvent(event);
       if (success) {
         eventsStoredCounter.inc();
       } else {
@@ -133,7 +138,7 @@ export class NostrRelay {
 
     const queryPromises = filters.map(async (filter) => {
       try {
-        const events = await queryEvents(filter);
+        const events = await this.clickhouse.queryEvents(filter);
         for (const event of events) {
           sendEvent(event);
         }
@@ -201,6 +206,7 @@ export class NostrRelay {
     this.subscriptions.clear();
     this.connectionSubs.clear();
     this.connectionRateLimiters.clear();
+    await this.clickhouse.shutdown();
   }
 
   private isValidEvent(event: NostrEvent): boolean {
@@ -231,7 +237,7 @@ export class NostrRelay {
       return false;
     }
 
-    if (!config.verification.enabled) {
+    if (!this.config.verification.enabled) {
       return true;
     }
 

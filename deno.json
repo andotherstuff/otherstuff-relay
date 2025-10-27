@@ -1,23 +1,10 @@
 {
-  "compilerOptions": {
-    "lib": ["deno.window"]
+  "tasks": {
+    "start": "deno serve -A --env-file src/server.ts"
   },
   "imports": {
     "@nostrify/nostrify": "jsr:@nostrify/nostrify@^0.46.5",
     "hono": "npm:hono@^4.10.3",
     "prom-client": "npm:prom-client@^15.1.0"
-  },
-  "lint": {
-    "rules": {
-      "tags": ["recommended"]
-    }
-  },
-  "fmt": {
-    "include": ["src/", "*.ts", "*.js"]
-  },
-  "tasks": {
-    "start": "deno run --allow-net --allow-env src/server.ts",
-    "dev": "deno run --allow-net --allow-env --watch src/server.ts",
-    "serve": "deno serve -A --env-file src/server.ts"
   }
 }

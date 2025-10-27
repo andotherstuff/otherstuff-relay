@@ -1,33 +1,52 @@
 # Clickhouse Relay
 
-A high-performance Nostr relay server built with Deno and ClickHouse, optimized for high-throughput event processing and real-time data delivery.
+A high-performance Nostr relay server built with Deno and ClickHouse, optimized
+for high-throughput event processing and real-time data delivery.
 
 ## Overview
 
-This relay server combines the lightweight efficiency of Deno with the analytical power of ClickHouse to deliver a scalable Nostr infrastructure solution. The architecture prioritizes performance, reliability, and operational simplicity.
+This relay server combines the lightweight efficiency of Deno with the
+analytical power of ClickHouse to deliver a scalable Nostr infrastructure
+solution. The architecture prioritizes performance, reliability, and operational
+simplicity.
 
 ## Architecture
 
-- **Deno Runtime**: Modern JavaScript/TypeScript runtime with native HTTP server capabilities
-- **ClickHouse Database**: Columnar database optimized for time-series event storage and analytical queries
-- **WebSocket Protocol**: Real-time bidirectional communication with Nostr clients
-- **Prometheus Metrics**: Comprehensive monitoring and performance tracking using prom-client
+- **Deno Runtime**: Modern JavaScript/TypeScript runtime with native HTTP server
+  capabilities
+- **ClickHouse Database**: Columnar database optimized for time-series event
+  storage and analytical queries
+- **WebSocket Protocol**: Real-time bidirectional communication with Nostr
+  clients
+- **Prometheus Metrics**: Comprehensive monitoring and performance tracking
+  using prom-client
 
 ## Features
 
 ### Performance
-- **Event Batching**: Processes up to 1,000 events per batch, reducing database connections by 99.9%
-- **Intelligent Rate Limiting**: Per-connection limits prevent abuse while maintaining throughput
-- **Query Optimization**: Automatic timeouts, size limits, and result caps protect system resources
-- **Fast Validation**: Rapid rejection of invalid events to minimize processing overhead
+
+- **Event Batching**: Processes up to 1,000 events per batch, reducing database
+  connections by 99.9%
+- **Intelligent Rate Limiting**: Per-connection limits prevent abuse while
+  maintaining throughput
+- **Query Optimization**: Automatic timeouts, size limits, and result caps
+  protect system resources
+- **Fast Validation**: Rapid rejection of invalid events to minimize processing
+  overhead
 
 ### Reliability
-- **Connection Management**: Robust resource limits and cleanup prevent memory leaks
-- **Graceful Shutdown**: Ensures all buffered events are persisted before termination
-- **Error Handling**: Comprehensive error recovery and logging for operational visibility
+
+- **Connection Management**: Robust resource limits and cleanup prevent memory
+  leaks
+- **Graceful Shutdown**: Ensures all buffered events are persisted before
+  termination
+- **Error Handling**: Comprehensive error recovery and logging for operational
+  visibility
 
 ### Observability
-- **Prometheus Metrics**: Industry-standard metrics using prom-client library for monitoring and alerting
+
+- **Prometheus Metrics**: Industry-standard metrics using prom-client library
+  for monitoring and alerting
 - **Health Endpoints**: Real-time system status and diagnostic information
 - **Structured Logging**: Clear, actionable log messages for troubleshooting
 
@@ -58,11 +77,13 @@ cp .env.example .env
 Configure the following environment variables:
 
 #### Server Configuration
+
 ```bash
 PORT=8000                                    # HTTP server port
 ```
 
 #### Database Configuration
+
 ```bash
 # ClickHouse connection URL
 # Format: clickhouse://[user[:password]@]host[:port]/database
@@ -74,12 +95,14 @@ DATABASE_URL=clickhouse://localhost/nostr
 ```
 
 #### Performance Tuning
+
 ```bash
 BATCH_SIZE=10000                            # Events per database batch
 FLUSH_INTERVAL=50                           # Maximum batch flush delay (ms)
 ```
 
 #### Feature Flags
+
 ```bash
 NO_VERIFICATION=false                       # Disable signature verification
 METRICS_ENABLED=true                        # Enable metrics endpoint
@@ -88,18 +111,21 @@ METRICS_ENABLED=true                        # Enable metrics endpoint
 ### Running the Server
 
 Development mode with hot reload:
+
 ```bash
 deno task dev
 ```
 
 Production mode:
+
 ```bash
 deno task start
 ```
 
 ## Database Schema
 
-The ClickHouse schema is optimized for Nostr event patterns and analytical queries:
+The ClickHouse schema is optimized for Nostr event patterns and analytical
+queries:
 
 ```sql
 CREATE TABLE events (
@@ -123,16 +149,19 @@ SETTINGS index_granularity = 8192
 ## API Endpoints
 
 ### WebSocket Endpoint
+
 - **URL**: `ws://localhost:8000/`
 - **Protocol**: Nostr WebSocket protocol
 - **Purpose**: Real-time event streaming and client communication
 
 ### Health Check
+
 - **URL**: `GET /health`
 - **Response**: JSON object with system status
 - **Purpose**: Service health monitoring and load balancer checks
 
 ### Metrics
+
 - **URL**: `GET /metrics`
 - **Format**: Prometheus text format
 - **Purpose**: Performance monitoring and alerting
@@ -140,16 +169,19 @@ SETTINGS index_granularity = 8192
 ## Performance Characteristics
 
 ### Throughput
+
 - **Event Ingestion**: 1,000+ events/second per connection
 - **Query Response**: Sub-millisecond for indexed queries
 - **Concurrent Connections**: 10,000+ simultaneous WebSocket connections
 
 ### Resource Efficiency
+
 - **Memory Usage**: < 100MB for typical workloads
 - **CPU Utilization**: Minimal overhead due to event batching
 - **Database Connections**: Pool-based connection management
 
 ### Scalability
+
 - **Horizontal Scaling**: Multiple relay instances behind load balancer
 - **Database Scaling**: ClickHouse cluster support for high availability
 - **Storage**: Partitioned data enables efficient archival and retention
@@ -204,8 +236,10 @@ CMD ["deno", "task", "start"]
 
 ## License
 
-This project is licensed under the AGPLv3 License. See the LICENSE file for details.
+This project is licensed under the AGPLv3 License. See the LICENSE file for
+details.
 
 ## Support
 
-For issues, questions, or contributions, please open an issue on the GitHub repository or contact the maintainers.
+For issues, questions, or contributions, please open an issue on the GitHub
+repository or contact the maintainers.

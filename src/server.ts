@@ -1,7 +1,7 @@
 import { Hono } from "hono";
+import { Config } from "./config.ts";
 import { NostrRelay } from "./relay.ts";
-import { shutdown as clickhouseShutdown } from "./clickhouse.ts";
-import { config } from "./config.ts";
+import { ClickHouseClient } from "./clickhouse.ts";
 import { connectionsGauge, getMetrics, register } from "./metrics.ts";
 import type {
   NostrClientMsg,
@@ -9,10 +9,18 @@ import type {
   NostrRelayMsg,
 } from "@nostrify/nostrify";
 
-const app = new Hono();
-const relay = new NostrRelay();
+// Instantiate config with Deno.env
+const config = new Config(Deno.env);
+
+// Instantiate ClickHouse client with config
+const clickhouse = new ClickHouseClient(config);
+
+// Instantiate relay with config and clickhouse
+const relay = new NostrRelay(config, clickhouse);
 
 await relay.init();
+
+const app = new Hono();
 
 // Metrics endpoint
 if (config.metrics.enabled) {
@@ -119,7 +127,6 @@ console.log(
 const shutdown = async () => {
   console.log("Shutting down...");
   await relay.close();
-  await clickhouseShutdown();
   Deno.exit(0);
 };
 
