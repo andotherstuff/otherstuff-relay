@@ -11,6 +11,7 @@ import {
 } from "./metrics.ts";
 import type { ClickHouseClient } from "@clickhouse/client-web";
 import type { NostrEvent, NostrFilter } from "@nostrify/nostrify";
+import type { RedisClientType } from "redis";
 
 type Subscription = {
   connId: string;
@@ -31,8 +32,7 @@ export class NostrRelay {
 
   constructor(
     private clickhouse: ClickHouseClient,
-    // deno-lint-ignore no-explicit-any
-    private redis: any,
+    private redis: RedisClientType,
   ) {}
 
   async handleEvent(

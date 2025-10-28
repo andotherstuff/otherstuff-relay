@@ -38,6 +38,7 @@ await clickhouse.query({
 const redis = createRedisClient({
   url: config.redisUrl,
 });
+
 await redis.connect();
 
 const app = new Hono();
