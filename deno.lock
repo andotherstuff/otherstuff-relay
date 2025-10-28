@@ -10,6 +10,7 @@
     "npm:lru-cache@^10.2.0": "10.4.3",
     "npm:nostr-tools@^2.13.0": "2.16.2",
     "npm:nostr-tools@^2.17.1": "2.17.1",
+    "npm:nostr-wasm@0.1": "0.1.0",
     "npm:prom-client@^15.1.0": "15.1.3",
     "npm:redis@^5.9.0": "5.9.0_@redis+client@5.9.0",
     "npm:websocket-ts@^2.2.1": "2.2.1",
@@ -237,6 +238,7 @@
       "npm:@clickhouse/client-web@^1.12.1",
       "npm:hono@^4.10.3",
       "npm:nostr-tools@^2.17.1",
+      "npm:nostr-wasm@0.1",
       "npm:prom-client@^15.1.0",
       "npm:redis@^5.9.0"
     ]

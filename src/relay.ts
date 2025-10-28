@@ -1,4 +1,5 @@
-import { verifyEvent } from "nostr-tools";
+import { setNostrWasm, verifyEvent } from "nostr-tools/wasm";
+import { initNostrWasm } from "nostr-wasm";
 import {
   eventsFailedCounter,
   eventsInvalidCounter,
@@ -23,6 +24,11 @@ export class NostrRelay {
   private subscriptions = new Map<string, Subscription>();
   private connectionSubs = new Map<string, Set<string>>();
 
+  private wasmInitialized: Promise<void> = (async () => {
+    const wasm = await initNostrWasm();
+    setNostrWasm(wasm);
+  })();
+
   constructor(
     private clickhouse: ClickHouseClient,
     // deno-lint-ignore no-explicit-any
@@ -34,7 +40,7 @@ export class NostrRelay {
   ): Promise<[boolean, string]> {
     eventsReceivedCounter.inc();
 
-    if (!verifyEvent(event)) {
+    if (!await this.verifyEvent(event)) {
       eventsInvalidCounter.inc();
       return [false, "invalid: event validation failed"];
     }
@@ -248,5 +254,10 @@ export class NostrRelay {
       content: row.content,
       sig: row.sig,
     }));
+  }
+
+  private async verifyEvent(event: NostrEvent): Promise<boolean> {
+    await this.wasmInitialized;
+    return verifyEvent(event);
   }
 }
