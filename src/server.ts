@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { createClient } from "@clickhouse/client-web";
 import { createClient as createRedisClient } from "redis";
 import { Config } from "./config.ts";
-import { connectionsGauge, getMetrics, register, RedisMetrics } from "./metrics.ts";
+import { connectionsGauge, getMetrics, register, RedisMetrics, initializeMetrics } from "./metrics.ts";
 import type { NostrRelayMsg } from "@nostrify/nostrify";
 
 // Instantiate config with Deno.env
@@ -40,6 +40,9 @@ const redis = createRedisClient({
 });
 
 await redis.connect();
+
+// Initialize metrics with Redis client
+initializeMetrics(redis);
 
 const app = new Hono();
 

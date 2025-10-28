@@ -8,7 +8,7 @@ import { initNostrWasm } from "nostr-wasm";
 import { createClient } from "@clickhouse/client-web";
 import { createClient as createRedisClient } from "redis";
 import { Config } from "./config.ts";
-import { RedisMetrics } from "./metrics.ts";
+import { RedisMetrics, initializeMetrics } from "./metrics.ts";
 import type { NostrEvent, NostrFilter } from "@nostrify/nostrify";
 
 const config = new Config(Deno.env);
@@ -23,6 +23,9 @@ const redis = createRedisClient({
   url: config.redisUrl,
 });
 await redis.connect();
+
+// Initialize metrics with Redis client
+initializeMetrics(redis);
 
 // Initialize WASM for event verification
 const wasmInitialized = (async () => {

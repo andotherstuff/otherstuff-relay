@@ -4,7 +4,7 @@
 import { createClient } from "@clickhouse/client-web";
 import { createClient as createRedisClient } from "redis";
 import { Config } from "./config.ts";
-import { RedisMetrics } from "./metrics.ts";
+import { RedisMetrics, initializeMetrics } from "./metrics.ts";
 import type { NostrEvent } from "@nostrify/nostrify";
 
 const config = new Config(Deno.env);
@@ -19,6 +19,9 @@ const redis = createRedisClient({
   url: config.redisUrl,
 });
 await redis.connect();
+
+// Initialize metrics with Redis client
+initializeMetrics(redis);
 
 const WORKER_ID = crypto.randomUUID().slice(0, 8);
 console.log(`🔧 Storage worker ${WORKER_ID} started, waiting for events...`);

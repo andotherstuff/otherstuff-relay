@@ -1,15 +1,11 @@
 import { Counter, Gauge, Registry } from "prom-client";
-import { createClient as createRedisClient } from "redis";
-import { Config } from "./config.ts";
+import type { RedisClientType } from "redis";
 
 // Create a custom registry
 export const register = new Registry();
 
-// Redis client for metrics storage
-const redis = createRedisClient({
-  url: new Config(Deno.env).redisUrl,
-});
-await redis.connect();
+// Redis client for metrics storage (will be injected)
+let redis: any;
 
 // Redis keys for metrics
 const METRICS_KEYS = {
@@ -36,6 +32,11 @@ export const subscriptionsGauge = new Gauge({
   help: "Current active subscriptions",
   registers: [register],
 });
+
+// Initialize metrics with Redis client
+export function initializeMetrics(redisClient: any): void {
+  redis = redisClient;
+}
 
 // Redis-based metrics functions
 export class RedisMetrics {
