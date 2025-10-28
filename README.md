@@ -14,10 +14,15 @@ simplicity.
 
 - **Deno Runtime**: Modern JavaScript/TypeScript runtime with native HTTP server
   capabilities (`deno serve` with 16 parallel instances)
-- **Redis Queue**: High-performance in-memory queue for buffering incoming
-  events
-- **Worker Process**: Dedicated batch processor that pulls events from Redis and
-  inserts into ClickHouse
+- **Redis Queues**: High-performance in-memory queues for message passing and
+  coordination
+  - `nostr:relay:queue`: Raw client messages awaiting processing
+  - `nostr:events:queue`: Validated events awaiting batch insertion
+  - `nostr:responses:{connId}`: Responses from workers to specific connections
+- **Relay Workers**: N parallel processes that validate events and handle Nostr
+  protocol logic
+- **Storage Workers**: Dedicated batch processors that pull validated events
+  from Redis and insert into ClickHouse
 - **ClickHouse Database**: Columnar database optimized for time-series event
   storage and analytical queries
 - **WebSocket Protocol**: Real-time bidirectional communication with Nostr
@@ -25,23 +30,36 @@ simplicity.
 - **Prometheus Metrics**: Comprehensive monitoring and performance tracking
   using prom-client
 
-### Event Flow
+### Message Flow
 
 ```
-Nostr Clients → WebSocket → Deno (16 instances) → Redis Queue → Worker → ClickHouse
-                                                        ↓
-                                                  Batch Insert
-                                                  (1000 events)
+Nostr Clients
+    ↓ (WebSocket)
+Deno Server (16 instances)
+    ↓ (Queue raw messages)
+Redis: nostr:relay:queue
+    ↓ (Pull & process)
+Relay Workers (N parallel) ← Validate in parallel
+    ↓ (Queue validated events)
+Redis: nostr:events:queue
+    ↓ (Batch pull)
+Storage Workers (M parallel)
+    ↓ (Batch insert)
+ClickHouse
 ```
 
-This architecture solves the HTTP overhead problem by:
+This architecture solves the validation bottleneck by:
 
-1. **Fast writes**: Individual events pushed to Redis (microseconds per
-   operation)
-2. **Batch processing**: Worker pulls 1000 events at a time and inserts in one
-   ClickHouse request
-3. **Horizontal scaling**: 16 Deno instances handle concurrent connections
-   without shared memory
+1. **Parallel validation**: N relay workers process and validate events
+   concurrently
+2. **Fast message queueing**: WebSocket server queues raw messages without
+   blocking (microseconds)
+3. **Batch storage**: Storage workers pull 1000 validated events and insert in
+   one ClickHouse request
+4. **Horizontal scaling**: 16 Deno instances + N relay workers + M storage
+   workers = massive parallelism
+5. **Shared state via Redis**: Workers coordinate through Redis (subscriptions,
+   responses)
 
 ## Features
 
@@ -140,17 +158,24 @@ deno task start
 This starts:
 
 - 1 web server (16 Deno instances via `deno serve`)
-- 2 worker processes (configurable via `NUM_WORKERS` env var)
+- 4 relay workers (configurable via `NUM_RELAY_WORKERS` env var)
+- 2 storage workers (configurable via `NUM_STORAGE_WORKERS` env var)
 
 **Manual** - Run processes separately:
 
-Terminal 1 - Worker(s):
+Terminal 1 - Relay worker(s):
 
 ```bash
-deno task worker
+deno task relay-worker
 ```
 
-Terminal 2 - Web server:
+Terminal 2 - Storage worker(s):
+
+```bash
+deno task storage-worker
+```
+
+Terminal 3 - Web server:
 
 ```bash
 deno task server
@@ -161,13 +186,14 @@ deno task server
 Adjust the number of worker processes in `.env`:
 
 ```bash
-NUM_WORKERS=4  # Run 4 workers for higher throughput
+NUM_RELAY_WORKERS=8      # Run 8 relay workers for parallel validation
+NUM_STORAGE_WORKERS=4    # Run 4 storage workers for higher write throughput
 ```
 
 Or set it when running:
 
 ```bash
-NUM_WORKERS=4 deno task start
+NUM_RELAY_WORKERS=8 NUM_STORAGE_WORKERS=4 deno task start
 ```
 
 ## Database Schema
@@ -223,19 +249,23 @@ batches by the worker process.
 
 ### Throughput
 
-- **Event Ingestion**: 1,000+ events/second per connection
+- **Event Ingestion**: 10,000+ events/second with parallel validation
+- **Validation**: Scales linearly with number of relay workers
 - **Query Response**: Sub-millisecond for indexed queries
 - **Concurrent Connections**: 10,000+ simultaneous WebSocket connections
 
 ### Resource Efficiency
 
-- **Memory Usage**: < 100MB for typical workloads
-- **CPU Utilization**: Minimal overhead with efficient query execution
-- **Database Connections**: Native ClickHouse client connection management
+- **Memory Usage**: ~50MB per worker process
+- **CPU Utilization**: Distributed across relay workers for parallel validation
+- **Database Connections**: Pooled connections per storage worker
+- **Queue Latency**: < 1ms for message queueing, ~10ms for response delivery
 
 ### Scalability
 
-- **Horizontal Scaling**: Multiple relay instances behind load balancer
+- **Parallel Validation**: N relay workers process events concurrently
+- **Horizontal Scaling**: Multiple server instances + workers behind load
+  balancer
 - **Database Scaling**: ClickHouse cluster support for high availability
 - **Storage**: Partitioned data enables efficient archival and retention
 
@@ -245,12 +275,12 @@ batches by the worker process.
 
 ```
 src/
-├── server.ts      # HTTP server and WebSocket handling
-├── relay.ts       # Nostr protocol logic and subscription management
-├── clickhouse.ts  # Database operations and schema management
-├── types.ts       # TypeScript type definitions
-├── config.ts      # Environment configuration
-└── metrics.ts     # Prometheus metrics collection
+├── server.ts         # HTTP server and WebSocket handling
+├── relay-worker.ts   # Relay worker for parallel message processing & validation
+├── storage-worker.ts # Storage worker for batch ClickHouse inserts
+├── start.ts          # Process manager to run all components
+├── config.ts         # Environment configuration
+└── metrics.ts        # Prometheus metrics collection
 ```
 
 ### Contributing

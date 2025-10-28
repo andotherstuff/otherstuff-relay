@@ -1,5 +1,5 @@
 /**
- * Worker process that batches events from Redis and inserts into ClickHouse
+ * Storage worker process that batches events from Redis and inserts into ClickHouse
  */
 import { createClient } from "@clickhouse/client-web";
 import { createClient as createRedisClient } from "redis";
@@ -19,7 +19,8 @@ const redis = createRedisClient({
 });
 await redis.connect();
 
-console.log("🔧 Worker started, waiting for events...");
+const WORKER_ID = crypto.randomUUID().slice(0, 8);
+console.log(`🔧 Storage worker ${WORKER_ID} started, waiting for events...`);
 
 const BATCH_SIZE = 1000; // Number of events to batch before inserting
 const POLL_INTERVAL_MS = 10; // How often to check Redis when queue is empty
@@ -89,7 +90,7 @@ async function processEvents() {
 
 // Graceful shutdown
 const shutdown = async () => {
-  console.log("Shutting down worker...");
+  console.log(`Shutting down storage worker ${WORKER_ID}...`);
   // Process any remaining events in the queue
   const results = await redis.lPopCount("nostr:events:queue", BATCH_SIZE);
   if (results && results.length > 0) {

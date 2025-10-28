@@ -1,11 +1,9 @@
 import { Hono } from "hono";
-import { NSchema as n } from "@nostrify/nostrify";
 import { createClient } from "@clickhouse/client-web";
 import { createClient as createRedisClient } from "redis";
 import { Config } from "./config.ts";
-import { NostrRelay } from "./relay.ts";
 import { connectionsGauge, getMetrics, register } from "./metrics.ts";
-import type { NostrEvent, NostrRelayMsg } from "@nostrify/nostrify";
+import type { NostrRelayMsg } from "@nostrify/nostrify";
 
 // Instantiate config with Deno.env
 const config = new Config(Deno.env);
@@ -36,14 +34,11 @@ await clickhouse.query({
   SETTINGS index_granularity = 8192`,
 });
 
-// Instantiate Redis client
+// Instantiate Redis client for queueing messages
 const redis = createRedisClient({
   url: config.redisUrl,
 });
 await redis.connect();
-
-// Instantiate relay with config, clickhouse, and redis
-const relay = new NostrRelay(clickhouse, redis);
 
 const app = new Hono();
 
@@ -56,8 +51,12 @@ app.get("/metrics", async (c) => {
 });
 
 // Health endpoint
-app.get("/health", (c) => {
-  return c.json(relay.health());
+app.get("/health", async (c) => {
+  const queueLength = await redis.lLen("nostr:relay:queue");
+  return c.json({
+    status: "ok",
+    queueLength,
+  });
 });
 
 // WebSocket endpoint
@@ -69,53 +68,79 @@ app.get("/", (c) => {
 
   const { socket, response } = Deno.upgradeWebSocket(c.req.raw);
   const connId = crypto.randomUUID();
+  let responsePoller: number | null = null;
 
   socket.onopen = () => {
     connectionsGauge.inc();
+
+    // Start polling for responses from relay workers
+    responsePoller = setInterval(async () => {
+      try {
+        // Non-blocking pop of responses
+        const responses = await redis.lPopCount(
+          `nostr:responses:${connId}`,
+          100,
+        );
+        if (responses && responses.length > 0) {
+          for (const responseJson of responses) {
+            try {
+              const { msg } = JSON.parse(responseJson);
+              send(msg);
+            } catch (err) {
+              console.error("Error parsing response:", err);
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Error polling responses:", err);
+      }
+    }, 10); // Poll every 10ms for low latency
   };
 
   socket.onmessage = async (e) => {
     try {
-      const msg = n.json().pipe(n.clientMsg()).parse(e.data);
-
-      switch (msg[0]) {
-        case "EVENT": {
-          const event = msg[1];
-          const [ok, message] = await relay.handleEvent(event);
-          send(["OK", event.id, ok, message]);
-          break;
-        }
-
-        case "REQ": {
-          const [_, subId, ...filters] = msg;
-          await relay.handleReq(
-            connId,
-            subId,
-            filters,
-            (event: NostrEvent) => send(["EVENT", subId, event]),
-            () => send(["EOSE", subId]),
-          );
-          break;
-        }
-
-        case "CLOSE": {
-          const [_, subId] = msg;
-          relay.handleClose(connId, subId);
-          break;
-        }
-
-        default:
-          send(["NOTICE", "unknown command"]);
-      }
+      // Queue the raw message for relay workers to process
+      // Don't parse or validate here - let workers do that in parallel
+      await redis.lPush(
+        "nostr:relay:queue",
+        JSON.stringify({
+          connId,
+          msg: e.data,
+        }),
+      );
     } catch (err) {
-      console.error("Message error:", err);
-      send(["NOTICE", "invalid message"]);
+      console.error("Message queueing error:", err);
+      send(["NOTICE", "error: failed to queue message"]);
     }
   };
 
-  socket.onclose = () => {
+  socket.onclose = async () => {
     connectionsGauge.dec();
-    relay.handleDisconnect(connId);
+
+    // Stop polling for responses
+    if (responsePoller !== null) {
+      clearInterval(responsePoller);
+    }
+
+    // Send disconnect message to relay workers for cleanup
+    try {
+      await redis.lPush(
+        "nostr:relay:queue",
+        JSON.stringify({
+          connId,
+          msg: JSON.stringify(["DISCONNECT"]),
+        }),
+      );
+    } catch (err) {
+      console.error("Error sending disconnect:", err);
+    }
+
+    // Clean up response queue
+    try {
+      await redis.del(`nostr:responses:${connId}`);
+    } catch (err) {
+      console.error("Error cleaning up responses:", err);
+    }
   };
 
   socket.onerror = (err) => {
@@ -145,8 +170,9 @@ console.log(
 );
 
 const shutdown = async () => {
-  console.log("Shutting down...");
-  await relay.close();
+  console.log("Shutting down server...");
+  await redis.quit();
+  await clickhouse.close();
   Deno.exit(0);
 };
 

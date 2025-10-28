@@ -2,7 +2,8 @@
   "tasks": {
     "start": "deno run -A --env-file src/start.ts",
     "server": "deno serve -A --env-file src/server.ts",
-    "worker": "deno run -A --env-file src/worker.ts"
+    "relay-worker": "deno run -A --env-file src/relay-worker.ts",
+    "storage-worker": "deno run -A --env-file src/storage-worker.ts"
   },
   "imports": {
     "@clickhouse/client-web": "npm:@clickhouse/client-web@^1.12.1",
