@@ -1,4 +1,4 @@
-# otherstuff-relay
+# Otherstuff Relay
 
 A high-performance Nostr relay server built with Deno and ClickHouse, optimized
 for high-throughput event processing and real-time data delivery.
@@ -11,6 +11,8 @@ solution. The architecture prioritizes performance, reliability, and operational
 simplicity.
 
 ## Architecture
+
+![Architecture Diagram](./diagram.png)
 
 - **Deno Runtime**: Modern JavaScript/TypeScript runtime with native HTTP server
   capabilities (`deno serve` with 16 parallel instances)
