@@ -90,6 +90,13 @@ This architecture solves the validation bottleneck by:
 - **Health Endpoints**: Real-time system status and diagnostic information
 - **Structured Logging**: Clear, actionable log messages for troubleshooting
 
+### Data Import
+
+- **Batch Import**: Efficiently import 10GB+ JSONL files of historical events
+- **Streaming Processing**: Memory-efficient handling of large files
+- **Parallel Validation**: Multi-threaded signature verification for speed
+- **Duplicate Detection**: Optional checking to prevent duplicate events
+
 ## Quick Start
 
 ### Prerequisites
@@ -195,6 +202,26 @@ Or set it when running:
 ```bash
 NUM_RELAY_WORKERS=8 NUM_STORAGE_WORKERS=4 deno task start
 ```
+
+### Importing Historical Data
+
+Import large JSONL files of Nostr events:
+
+```bash
+# Basic import
+deno task import events.jsonl
+
+# Fast import (skip validation for trusted data)
+deno task import events.jsonl --skip-validation
+
+# Safe import (check for duplicates)
+deno task import events.jsonl --skip-duplicates
+
+# Optimized for performance
+deno task import events.jsonl --batch-size 10000 --parallel 8
+```
+
+See [docs/IMPORT.md](docs/IMPORT.md) for detailed import documentation.
 
 ## Database Schema
 

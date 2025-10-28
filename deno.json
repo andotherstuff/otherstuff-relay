@@ -3,7 +3,10 @@
     "start": "deno run -A --env-file src/start.ts",
     "server": "deno serve -A --env-file src/server.ts",
     "relay-worker": "deno run -A --env-file src/relay-worker.ts",
-    "storage-worker": "deno run -A --env-file src/storage-worker.ts"
+    "storage-worker": "deno run -A --env-file src/storage-worker.ts",
+    "import": "deno run -A --env-file src/import.ts",
+    "generate-test-events": "deno run -A scripts/generate-test-events.ts",
+    "test": "deno test -A --env-file"
   },
   "imports": {
     "@clickhouse/client-web": "npm:@clickhouse/client-web@^1.12.1",
