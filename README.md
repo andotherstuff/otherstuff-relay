@@ -3,6 +3,8 @@
 A high-performance Nostr relay server built with Deno and ClickHouse, optimized
 for high-throughput event processing and real-time data delivery.
 
+**✅ Full [NIP-01](https://github.com/nostr-protocol/nips/blob/master/01.md) Compliance** - See [NIP-01-COMPLIANCE.md](./NIP-01-COMPLIANCE.md)
+
 ## Overview
 
 This relay server combines the lightweight efficiency of Deno with the
@@ -65,14 +67,11 @@ This architecture solves the validation bottleneck by:
 
 ### Performance
 
-- **Intelligent Rate Limiting**: Per-connection limits prevent abuse while
-  maintaining throughput
-- **Query Optimization**: Automatic timeouts, size limits, and result caps
-  protect system resources
-- **Fast Validation**: Rapid rejection of invalid events to minimize processing
-  overhead
-- **Direct Database Access**: Efficient direct queries to ClickHouse for optimal
-  performance
+- **Parallel Event Processing**: N relay workers validate events concurrently
+- **Batch Storage**: Storage workers insert up to 1000 events per ClickHouse request
+- **Query Optimization**: Automatic timeouts, size limits, and result caps protect system resources
+- **Fast Validation**: Rapid rejection of invalid events to minimize processing overhead
+- **Direct Database Access**: Efficient direct queries to ClickHouse for optimal performance
 
 ### Reliability
 
@@ -194,6 +193,14 @@ Or set it when running:
 
 ```bash
 NUM_RELAY_WORKERS=8 NUM_STORAGE_WORKERS=4 deno task start
+```
+
+### Testing
+
+Run the NIP-01 compliance test suite:
+
+```bash
+deno task test:nip01
 ```
 
 ## Database Schema
