@@ -147,8 +147,6 @@ app.get("/", (c) => {
   socket.onerror = (err) => {
     if (Deno.env.get("DEBUG")) {
       console.error("WebSocket error:", err);
-    } else {
-      console.error("WebSocket connection error");
     }
   };
 
@@ -157,8 +155,10 @@ app.get("/", (c) => {
       if (socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify(msg));
       }
-    } catch {
-      // fallthrough
+    } catch (err) {
+      if (Deno.env.get("DEBUG")) {
+        console.error("Error sending message:", err);
+      }
     }
   }
 
