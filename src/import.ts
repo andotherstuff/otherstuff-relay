@@ -101,6 +101,12 @@ class EventImporter {
             // Basic validation
             if (!this.isValidEventStructure(event)) {
               this.stats.invalidEvents++;
+              if (this.stats.invalidEvents <= 10) { // Log first 10 invalid events for debugging
+                console.warn(
+                  `⚠️  Invalid event structure at line ${this.stats.totalLines}:`,
+                  this.getValidationError(event)
+                );
+              }
               continue;
             }
 
@@ -120,7 +126,9 @@ class EventImporter {
             }
           } catch (error) {
             this.stats.errors++;
-            console.error(`Error parsing line ${this.stats.totalLines}:`, error);
+            if (this.stats.errors <= 10) { // Log first 10 parse errors for debugging
+              console.error(`❌ Error parsing line ${this.stats.totalLines}:`, error);
+            }
           }
 
           // Report progress
@@ -286,6 +294,74 @@ class EventImporter {
   }
 
   /**
+   * Get detailed validation error message for debugging
+   */
+  private getValidationError(event: unknown): string {
+    if (!event || typeof event !== "object") {
+      return "Event is not an object";
+    }
+
+    const e = event as Partial<NostrEvent>;
+    const errors: string[] = [];
+
+    if (typeof e.id !== "string") {
+      errors.push(`id is ${typeof e.id}, expected string`);
+    } else if (e.id.length !== 64) {
+      errors.push(`id length is ${e.id.length}, expected 64`);
+    } else if (!/^[0-9a-f]+$/i.test(e.id)) {
+      errors.push("id is not valid hex");
+    }
+
+    if (typeof e.pubkey !== "string") {
+      errors.push(`pubkey is ${typeof e.pubkey}, expected string`);
+    } else if (e.pubkey.length !== 64) {
+      errors.push(`pubkey length is ${e.pubkey.length}, expected 64`);
+    } else if (!/^[0-9a-f]+$/i.test(e.pubkey)) {
+      errors.push("pubkey is not valid hex");
+    }
+
+    if (typeof e.created_at !== "number") {
+      errors.push(`created_at is ${typeof e.created_at}, expected number`);
+    } else if (e.created_at < 0) {
+      errors.push(`created_at is ${e.created_at}, must be >= 0`);
+    } else if (!Number.isInteger(e.created_at)) {
+      errors.push(`created_at is ${e.created_at}, must be an integer`);
+    } else if (e.created_at > 4294967295) {
+      errors.push(`created_at is ${e.created_at}, exceeds UInt32 max`);
+    }
+
+    if (typeof e.kind !== "number") {
+      errors.push(`kind is ${typeof e.kind}, expected number`);
+    } else if (e.kind < 0) {
+      errors.push(`kind is ${e.kind}, must be >= 0`);
+    } else if (!Number.isInteger(e.kind)) {
+      errors.push(`kind is ${e.kind}, must be an integer`);
+    } else if (e.kind > 4294967295) {
+      errors.push(`kind is ${e.kind}, exceeds UInt32 max`);
+    }
+
+    if (!Array.isArray(e.tags)) {
+      errors.push(`tags is ${typeof e.tags}, expected array`);
+    } else if (!e.tags.every(tag => Array.isArray(tag) && tag.every(item => typeof item === "string"))) {
+      errors.push("tags must be array of arrays of strings");
+    }
+
+    if (typeof e.content !== "string") {
+      errors.push(`content is ${typeof e.content}, expected string`);
+    }
+
+    if (typeof e.sig !== "string") {
+      errors.push(`sig is ${typeof e.sig}, expected string`);
+    } else if (e.sig.length !== 128) {
+      errors.push(`sig length is ${e.sig.length}, expected 128`);
+    } else if (!/^[0-9a-f]+$/i.test(e.sig)) {
+      errors.push("sig is not valid hex");
+    }
+
+    return errors.join(", ");
+  }
+
+  /**
    * Basic structural validation
    */
   private isValidEventStructure(event: unknown): event is NostrEvent {
@@ -293,15 +369,58 @@ class EventImporter {
 
     const e = event as Partial<NostrEvent>;
 
-    return (
-      typeof e.id === "string" &&
-      typeof e.pubkey === "string" &&
-      typeof e.created_at === "number" &&
-      typeof e.kind === "number" &&
-      Array.isArray(e.tags) &&
-      typeof e.content === "string" &&
-      typeof e.sig === "string"
-    );
+    // Check basic types
+    if (
+      typeof e.id !== "string" ||
+      typeof e.pubkey !== "string" ||
+      typeof e.created_at !== "number" ||
+      typeof e.kind !== "number" ||
+      !Array.isArray(e.tags) ||
+      typeof e.content !== "string" ||
+      typeof e.sig !== "string"
+    ) {
+      return false;
+    }
+
+    // Validate numeric constraints (ClickHouse UInt32 requirements)
+    // kind must be a non-negative integer
+    if (e.kind < 0 || !Number.isInteger(e.kind) || e.kind > 4294967295) {
+      return false;
+    }
+
+    // created_at must be a non-negative integer
+    if (e.created_at < 0 || !Number.isInteger(e.created_at) || e.created_at > 4294967295) {
+      return false;
+    }
+
+    // Validate string lengths (reasonable limits)
+    if (e.id.length !== 64) { // Nostr event IDs are always 64 hex chars
+      return false;
+    }
+
+    if (e.pubkey.length !== 64) { // Nostr pubkeys are always 64 hex chars
+      return false;
+    }
+
+    if (e.sig.length !== 128) { // Nostr signatures are always 128 hex chars
+      return false;
+    }
+
+    // Validate hex format for id, pubkey, and sig
+    const hexRegex = /^[0-9a-f]+$/i;
+    if (!hexRegex.test(e.id) || !hexRegex.test(e.pubkey) || !hexRegex.test(e.sig)) {
+      return false;
+    }
+
+    // Validate tags structure (must be array of arrays of strings)
+    if (!e.tags.every(tag => 
+      Array.isArray(tag) && 
+      tag.every(item => typeof item === "string")
+    )) {
+      return false;
+    }
+
+    return true;
   }
 
   /**

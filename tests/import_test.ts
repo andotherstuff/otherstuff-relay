@@ -14,15 +14,15 @@ setNostrWasm(wasm);
 Deno.test("EventImporter - validates event structure", async () => {
   const importer = new EventImporter();
   
-  // Valid event structure
+  // Valid event structure (with proper lengths and hex format)
   const validEvent = {
-    id: "abc123",
-    pubkey: "def456",
+    id: "a".repeat(64), // 64 hex chars
+    pubkey: "b".repeat(64), // 64 hex chars
     created_at: 1234567890,
     kind: 1,
     tags: [],
     content: "test",
-    sig: "789xyz",
+    sig: "c".repeat(128), // 128 hex chars
   };
   
   // @ts-ignore: accessing private method for testing
@@ -35,6 +35,14 @@ Deno.test("EventImporter - validates event structure", async () => {
   assertEquals(importer.isValidEventStructure({}), false);
   // @ts-ignore: accessing private method for testing
   assertEquals(importer.isValidEventStructure({ id: "test" }), false);
+  
+  // Invalid: negative kind
+  // @ts-ignore: accessing private method for testing
+  assertEquals(importer.isValidEventStructure({ ...validEvent, kind: -1 }), false);
+  
+  // Invalid: wrong id length
+  // @ts-ignore: accessing private method for testing
+  assertEquals(importer.isValidEventStructure({ ...validEvent, id: "abc123" }), false);
   
   await importer.close();
 });
