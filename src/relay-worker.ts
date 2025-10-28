@@ -8,6 +8,7 @@ import { initNostrWasm } from "nostr-wasm";
 import { createClient } from "@clickhouse/client-web";
 import { createClient as createRedisClient } from "redis";
 import { Config } from "./config.ts";
+import { RedisMetrics } from "./metrics.ts";
 import type { NostrEvent, NostrFilter } from "@nostrify/nostrify";
 
 const config = new Config(Deno.env);
@@ -143,8 +144,15 @@ async function handleEvent(
   connId: string,
   event: NostrEvent,
 ): Promise<void> {
+  // Increment events received counter
+  await RedisMetrics.incrementEventsReceived();
+  
+  // Increment events by kind counter
+  await RedisMetrics.incrementEventByKind(event.kind);
+  
   // Validate event
   if (!await verifyNostrEvent(event)) {
+    await RedisMetrics.incrementEventsInvalid();
     await sendResponse(connId, [
       "OK",
       event.id,
@@ -155,6 +163,7 @@ async function handleEvent(
   }
 
   if (JSON.stringify(event).length > 500000) {
+    await RedisMetrics.incrementEventsRejected();
     await sendResponse(connId, [
       "OK",
       event.id,
@@ -187,6 +196,9 @@ async function handleReq(
   subId: string,
   filters: NostrFilter[],
 ): Promise<void> {
+  // Increment queries counter
+  await RedisMetrics.incrementQueriesTotal();
+  
   // Limit filters per subscription
   if (filters.length > 10) {
     filters = filters.slice(0, 10);
@@ -198,6 +210,10 @@ async function handleReq(
 
   // Also store in Redis for subscription tracking across workers
   await redis.hSet(`nostr:subs:${connId}`, subId, JSON.stringify(filters));
+  
+  // Update subscription count
+  const totalSubs = await countTotalSubscriptions();
+  await RedisMetrics.setSubscriptions(totalSubs);
 
   // Query historical events for each filter
   const queryPromises = filters.map(async (filter) => {
@@ -232,6 +248,10 @@ async function handleClose(connId: string, subId: string): Promise<void> {
   const key = `${connId}:${subId}`;
   subscriptions.delete(key);
   await redis.hDel(`nostr:subs:${connId}`, subId);
+  
+  // Update subscription count
+  const totalSubs = await countTotalSubscriptions();
+  await RedisMetrics.setSubscriptions(totalSubs);
 }
 
 async function handleDisconnect(connId: string): Promise<void> {
@@ -249,6 +269,23 @@ async function handleDisconnect(connId: string): Promise<void> {
 
   // Remove from Redis
   await redis.del(`nostr:subs:${connId}`);
+  
+  // Update subscription count
+  const totalSubs = await countTotalSubscriptions();
+  await RedisMetrics.setSubscriptions(totalSubs);
+}
+
+// Helper function to count total subscriptions across all connections
+async function countTotalSubscriptions(): Promise<number> {
+  const keys = await redis.keys("nostr:subs:*");
+  let total = 0;
+  
+  for (const key of keys) {
+    const subCount = await redis.hLen(key);
+    total += subCount;
+  }
+  
+  return total;
 }
 
 async function broadcastEvent(event: NostrEvent): Promise<void> {

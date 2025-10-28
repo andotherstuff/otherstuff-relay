@@ -4,6 +4,7 @@
 import { createClient } from "@clickhouse/client-web";
 import { createClient as createRedisClient } from "redis";
 import { Config } from "./config.ts";
+import { RedisMetrics } from "./metrics.ts";
 import type { NostrEvent } from "@nostrify/nostrify";
 
 const config = new Config(Deno.env);
@@ -44,8 +45,15 @@ async function insertBatch(events: NostrEvent[]) {
     });
 
     console.log(`✅ Inserted ${events.length} events into ClickHouse`);
+    
+    // Increment events stored counter
+    await RedisMetrics.incrementEventsStored(events.length);
   } catch (error) {
     console.error("❌ Failed to insert batch:", error);
+    
+    // Increment events failed counter
+    await RedisMetrics.incrementEventsFailed(events.length);
+    
     // Push failed events back to queue for retry
     for (const event of events) {
       await redis.rPush("nostr:events:queue", JSON.stringify(event));

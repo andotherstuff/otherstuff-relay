@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { createClient } from "@clickhouse/client-web";
 import { createClient as createRedisClient } from "redis";
 import { Config } from "./config.ts";
-import { connectionsGauge, getMetrics, register } from "./metrics.ts";
+import { connectionsGauge, getMetrics, register, RedisMetrics } from "./metrics.ts";
 import type { NostrRelayMsg } from "@nostrify/nostrify";
 
 // Instantiate config with Deno.env
@@ -72,6 +72,7 @@ app.get("/", (c) => {
   let responsePoller: number | null = null;
 
   socket.onopen = () => {
+    RedisMetrics.incrementConnections();
     connectionsGauge.inc();
 
     // Start polling for responses from relay workers
@@ -116,6 +117,7 @@ app.get("/", (c) => {
   };
 
   socket.onclose = async () => {
+    RedisMetrics.incrementConnections(-1);
     connectionsGauge.dec();
 
     // Stop polling for responses
