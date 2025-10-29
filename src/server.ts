@@ -19,14 +19,9 @@ await clickhouse.query({
   query: "CREATE DATABASE IF NOT EXISTS nostr",
 });
 
-// Switch to nostr database for subsequent queries
-await clickhouse.query({
-  query: "USE nostr",
-});
-
 // Create the main events table using the new schema
 await clickhouse.query({
-  query: `CREATE TABLE IF NOT EXISTS events_local (
+  query: `CREATE TABLE IF NOT EXISTS nostr.events_local (
     id String COMMENT '32-byte hex event ID (SHA-256 hash)',
     pubkey String COMMENT '32-byte hex public key of event creator',
     created_at DateTime COMMENT 'Unix timestamp when event was created',
@@ -50,7 +45,7 @@ await clickhouse.query({
 
 // Create flattened tag materialized view for fast tag queries
 await clickhouse.query({
-  query: `CREATE MATERIALIZED VIEW IF NOT EXISTS event_tags_flat
+  query: `CREATE MATERIALIZED VIEW IF NOT EXISTS nostr.event_tags_flat
 ENGINE = MergeTree()
 ORDER BY (tag_name, tag_value_1, created_at, event_id)
 PARTITION BY toYYYYMM(created_at)
@@ -73,7 +68,7 @@ FROM events_local`,
 
 // Create statistics views for monitoring and analytics
 await clickhouse.query({
-  query: `CREATE VIEW IF NOT EXISTS event_stats AS
+  query: `CREATE VIEW IF NOT EXISTS nostr.event_stats AS
 SELECT
     toStartOfDay(created_at) as date,
     kind,
@@ -87,7 +82,7 @@ ORDER BY date DESC, event_count DESC`,
 });
 
 await clickhouse.query({
-  query: `CREATE VIEW IF NOT EXISTS relay_stats AS
+  query: `CREATE VIEW IF NOT EXISTS nostr.relay_stats AS
 SELECT
     relay_source,
     count() as event_count,
@@ -102,7 +97,7 @@ ORDER BY event_count DESC`,
 });
 
 await clickhouse.query({
-  query: `CREATE VIEW IF NOT EXISTS tag_stats AS
+  query: `CREATE VIEW IF NOT EXISTS nostr.tag_stats AS
 SELECT
     tag_name,
     count() as occurrence_count,

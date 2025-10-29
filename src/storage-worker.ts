@@ -107,25 +107,41 @@ async function processEvents() {
 // Graceful shutdown
 const shutdown = async () => {
   console.log(`Shutting down storage worker ${WORKER_ID}...`);
-  // Process any remaining events in the queue
-  const results = await redis.lPopCount("nostr:events:queue", BATCH_SIZE);
-  if (results && results.length > 0) {
-    const events: NostrEvent[] = results
-      .map((r: string) => {
-        try {
-          return JSON.parse(r) as NostrEvent;
-        } catch {
-          return null;
-        }
-      })
-      .filter((e: NostrEvent | null): e is NostrEvent => e !== null);
+  
+  try {
+    // Process any remaining events in the queue
+    const results = await redis.lPopCount("nostr:events:queue", BATCH_SIZE);
+    if (results && results.length > 0) {
+      const events: NostrEvent[] = results
+        .map((r: string) => {
+          try {
+            return JSON.parse(r) as NostrEvent;
+          } catch {
+            return null;
+          }
+        })
+        .filter((e: NostrEvent | null): e is NostrEvent => e !== null);
 
-    if (events.length > 0) {
-      await insertBatch(events);
+      if (events.length > 0) {
+        await insertBatch(events);
+      }
     }
+  } catch (error) {
+    console.error("Error processing remaining events during shutdown:", error);
   }
-  await redis.quit();
-  await clickhouse.close();
+
+  try {
+    await redis.quit();
+  } catch (error) {
+    console.error("Error closing Redis connection:", error);
+  }
+
+  try {
+    await clickhouse.close();
+  } catch (error) {
+    console.error("Error closing ClickHouse connection:", error);
+  }
+
   Deno.exit(0);
 };
 
