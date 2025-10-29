@@ -31,11 +31,10 @@ await clickhouse.query({
     tags Array(Array(String)) COMMENT 'Nested array of tags',
     indexed_at DateTime DEFAULT now() COMMENT 'When this event was indexed into Clickhouse',
     relay_source String DEFAULT '' COMMENT 'Source relay URL (e.g., wss://relay.damus.io)',
-    PRIMARY KEY (id),
     INDEX idx_kind kind TYPE minmax GRANULARITY 4,
     INDEX idx_pubkey pubkey TYPE bloom_filter(0.01) GRANULARITY 4
   ) ENGINE = ReplacingMergeTree(indexed_at)
-  ORDER BY (created_at, kind, pubkey)
+  ORDER BY (id, created_at, kind, pubkey)
   PARTITION BY toYYYYMM(created_at)
   SETTINGS 
     index_granularity = 8192,
