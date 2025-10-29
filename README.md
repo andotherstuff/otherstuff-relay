@@ -129,12 +129,16 @@ PORT=8000                                    # HTTP server port
 
 ```bash
 # ClickHouse connection URL
-# Format: http://[user[:password]@]host[:port]/database
-DATABASE_URL=http://localhost:8123/nostr
+# Format: http://[user[:password]@]host[:port]
+# Note: The schema will automatically use the 'nostr' database
+DATABASE_URL=http://localhost:8123
 
 # Examples:
-# DATABASE_URL=http://default:password@localhost:8123/nostr
-# DATABASE_URL=http://user@clickhouse.example.com:8123/mydb
+# DATABASE_URL=http://default:password@localhost:8123
+# DATABASE_URL=http://user@clickhouse.example.com:8123
+
+# Optional: Source relay identifier for tracking event origins
+RELAY_SOURCE=wss://your-relay-domain.com
 ```
 
 #### Redis Configuration
@@ -148,6 +152,8 @@ REDIS_URL=redis://localhost:6379
 # REDIS_URL=redis://:password@localhost:6379
 # REDIS_URL=redis://localhost:6379/0
 ```
+
+### Running the Server
 
 ### Running the Server
 
@@ -206,25 +212,50 @@ queries:
 ### Main Events Table
 
 ```sql
-CREATE TABLE nostr_events (
-  id String,
-  pubkey String,
-  created_at UInt32,
-  kind UInt32,
-  tags Array(Array(String)),
-  content String,
-  sig String,
-  event_date Date MATERIALIZED toDate(toDateTime(created_at)),
-  INDEX idx_pubkey pubkey TYPE bloom_filter GRANULARITY 1,
-  INDEX idx_kind kind TYPE minmax GRANULARITY 1,
-  INDEX idx_created_at created_at TYPE minmax GRANULARITY 1
-) ENGINE = MergeTree()
-PARTITION BY toYYYYMM(event_date)
-ORDER BY (kind, created_at, id)
-SETTINGS index_granularity = 8192
+CREATE TABLE events_local (
+    id String COMMENT '32-byte hex event ID (SHA-256 hash)',
+    pubkey String COMMENT '32-byte hex public key of event creator',
+    created_at DateTime COMMENT 'Unix timestamp when event was created',
+    kind UInt16 COMMENT 'Event kind (0-65535, see NIP-01)',
+    content String COMMENT 'Event content (arbitrary string, format depends on kind)',
+    sig String COMMENT '64-byte hex Schnorr signature',
+    tags Array(Array(String)) COMMENT 'Nested array of tags',
+    indexed_at DateTime DEFAULT now() COMMENT 'When this event was indexed into Clickhouse',
+    relay_source String DEFAULT '' COMMENT 'Source relay URL (e.g., wss://relay.damus.io)',
+    PRIMARY KEY (id),
+    INDEX idx_kind kind TYPE minmax GRANULARITY 4,
+    INDEX idx_pubkey pubkey TYPE bloom_filter(0.01) GRANULARITY 4
+) ENGINE = ReplacingMergeTree(indexed_at)
+ORDER BY (created_at, kind, pubkey)
+PARTITION BY toYYYYMM(created_at)
 ```
 
-The table is automatically created on server startup. Events are inserted in
+### Tag Optimization
+
+A materialized view automatically flattens tags for fast queries:
+
+```sql
+CREATE MATERIALIZED VIEW event_tags_flat
+AS SELECT
+    id as event_id,
+    pubkey,
+    created_at,
+    kind,
+    arrayJoin(tags) as tag_array,
+    tag_array[1] as tag_name,
+    tag_array[2] as tag_value_1
+FROM events_local
+```
+
+### Statistics Views
+
+Additional views provide analytics and monitoring:
+
+- `event_stats` - Daily event counts by kind
+- `relay_stats` - Source relay statistics  
+- `tag_stats` - Tag frequency analysis
+
+The tables are automatically created on server startup. Events are inserted in
 batches by the worker process.
 
 ## API Endpoints

@@ -11,7 +11,7 @@ const config = new Config(Deno.env);
 
 // ClickHouse client
 const clickhouse = createClient({
-  url: config.databaseUrl,
+  url: config.getClickHouseUrl(),
 });
 
 // Redis client
@@ -37,15 +37,17 @@ async function insertBatch(events: NostrEvent[]) {
 
   try {
     await clickhouse.insert({
-      table: "nostr_events",
+      table: "events_local",
       values: events.map((event) => ({
         id: event.id,
         pubkey: event.pubkey,
-        created_at: event.created_at,
+        created_at: new Date(event.created_at * 1000), // Convert Unix timestamp to DateTime
         kind: event.kind,
         tags: event.tags,
         content: event.content,
         sig: event.sig,
+        indexed_at: new Date(),
+        relay_source: config.relaySource,
       })),
       format: "JSONEachRow",
     });
