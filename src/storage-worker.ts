@@ -41,12 +41,12 @@ async function insertBatch(events: NostrEvent[]) {
       values: events.map((event) => ({
         id: event.id,
         pubkey: event.pubkey,
-        created_at: new Date(event.created_at * 1000), // Convert Unix timestamp to DateTime
+        created_at: event.created_at, // Keep as UInt32 Unix timestamp
         kind: event.kind,
         tags: event.tags,
         content: event.content,
         sig: event.sig,
-        indexed_at: new Date(),
+        indexed_at: Math.floor(Date.now() / 1000), // Current Unix timestamp
         relay_source: config.relaySource,
       })),
       format: "JSONEachRow",

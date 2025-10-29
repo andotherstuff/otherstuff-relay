@@ -107,13 +107,13 @@ async function queryEventsSimple(filter: NostrFilter, limit: number): Promise<No
   }
 
   if (filter.since) {
-    conditions.push(`created_at >= {since:DateTime}`);
-    params.since = new Date(filter.since * 1000);
+    conditions.push(`created_at >= {since:UInt32}`);
+    params.since = filter.since;
   }
 
   if (filter.until) {
-    conditions.push(`created_at <= {until:DateTime}`);
-    params.until = new Date(filter.until * 1000);
+    conditions.push(`created_at <= {until:UInt32}`);
+    params.until = filter.until;
   }
 
   const whereClause = conditions.length > 0
@@ -126,7 +126,7 @@ async function queryEventsSimple(filter: NostrFilter, limit: number): Promise<No
     SELECT
       id,
       pubkey,
-      toUnixTimestamp(created_at) as created_at,
+      created_at,
       kind,
       tags,
       content,

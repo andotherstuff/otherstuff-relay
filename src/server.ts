@@ -24,18 +24,18 @@ await clickhouse.query({
   query: `CREATE TABLE IF NOT EXISTS nostr.events_local (
     id String COMMENT '32-byte hex event ID (SHA-256 hash)',
     pubkey String COMMENT '32-byte hex public key of event creator',
-    created_at DateTime COMMENT 'Unix timestamp when event was created',
+    created_at UInt32 COMMENT 'Unix timestamp when event was created',
     kind UInt16 COMMENT 'Event kind (0-65535, see NIP-01)',
     content String COMMENT 'Event content (arbitrary string, format depends on kind)',
     sig String COMMENT '64-byte hex Schnorr signature',
     tags Array(Array(String)) COMMENT 'Nested array of tags',
-    indexed_at DateTime DEFAULT now() COMMENT 'When this event was indexed into Clickhouse',
+    indexed_at UInt32 DEFAULT now() COMMENT 'When this event was indexed into Clickhouse',
     relay_source String DEFAULT '' COMMENT 'Source relay URL (e.g., wss://relay.damus.io)',
     INDEX idx_kind kind TYPE minmax GRANULARITY 4,
     INDEX idx_pubkey pubkey TYPE bloom_filter(0.01) GRANULARITY 4
   ) ENGINE = ReplacingMergeTree(indexed_at)
   ORDER BY (id, created_at, kind, pubkey)
-  PARTITION BY toYYYYMM(created_at)
+  PARTITION BY toYYYYMM(toDateTime(created_at))
   SETTINGS 
     index_granularity = 8192,
     allow_nullable_key = 0
@@ -47,7 +47,7 @@ await clickhouse.query({
   query: `CREATE MATERIALIZED VIEW IF NOT EXISTS nostr.event_tags_flat
 ENGINE = MergeTree()
 ORDER BY (tag_name, tag_value_1, created_at, event_id)
-PARTITION BY toYYYYMM(created_at)
+PARTITION BY toYYYYMM(toDateTime(created_at))
 AS SELECT
     id as event_id,
     pubkey,
@@ -68,7 +68,7 @@ FROM nostr.events_local`,
 await clickhouse.query({
   query: `CREATE VIEW IF NOT EXISTS nostr.event_stats AS
 SELECT
-    toStartOfDay(created_at) as date,
+    toStartOfDay(toDateTime(created_at)) as date,
     kind,
     count() as event_count,
     uniq(pubkey) as unique_authors,
@@ -85,8 +85,8 @@ SELECT
     relay_source,
     count() as event_count,
     uniq(id) as unique_events,
-    min(created_at) as earliest_event,
-    max(created_at) as latest_event,
+    min(toDateTime(created_at)) as earliest_event,
+    max(toDateTime(created_at)) as latest_event,
     uniq(pubkey) as unique_authors
 FROM nostr.events_local
 WHERE relay_source != ''
