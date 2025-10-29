@@ -16,8 +16,11 @@ export class Config {
   }
 
   getClickHouseUrl(): string {
-    const baseUrl = this.databaseUrl || "http://localhost:8123";
-    // Ensure we're using the nostr database
+    return this.databaseUrl || "http://localhost:8123";
+  }
+
+  getClickHouseDatabaseUrl(): string {
+    const baseUrl = this.getClickHouseUrl();
     if (baseUrl.endsWith('/')) {
       return `${baseUrl}nostr`;
     }

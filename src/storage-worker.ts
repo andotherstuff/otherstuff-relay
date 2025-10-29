@@ -11,7 +11,7 @@ const config = new Config(Deno.env);
 
 // ClickHouse client
 const clickhouse = createClient({
-  url: config.getClickHouseUrl(),
+  url: config.getClickHouseDatabaseUrl(),
 });
 
 // Redis client

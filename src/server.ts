@@ -8,7 +8,7 @@ import type { NostrRelayMsg } from "@nostrify/nostrify";
 // Instantiate config with Deno.env
 const config = new Config(Deno.env);
 
-// Instantiate ClickHouse client with config
+// Instantiate ClickHouse client with config (connect to default database first)
 const clickhouse = createClient({
   url: config.getClickHouseUrl(),
 });
@@ -17,6 +17,11 @@ const clickhouse = createClient({
 // Create the nostr database if it doesn't exist
 await clickhouse.query({
   query: "CREATE DATABASE IF NOT EXISTS nostr",
+});
+
+// Switch to nostr database for subsequent queries
+await clickhouse.query({
+  query: "USE nostr",
 });
 
 // Create the main events table using the new schema
