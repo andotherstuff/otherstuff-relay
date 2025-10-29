@@ -48,7 +48,6 @@ await clickhouse.query({
 ENGINE = MergeTree()
 ORDER BY (tag_name, tag_value_1, created_at, event_id)
 PARTITION BY toYYYYMM(created_at)
-COMMENT 'Flattened tag view for efficient tag searching'
 AS SELECT
     id as event_id,
     pubkey,
@@ -62,7 +61,7 @@ AS SELECT
     if(length(tag_array) >= 5, tag_array[5], '') as tag_value_4,
     length(tag_array) as tag_length,
     tag_array as tag_full
-FROM events_local`,
+FROM nostr.events_local`,
 });
 
 // Create statistics views for monitoring and analytics
@@ -75,7 +74,7 @@ SELECT
     uniq(pubkey) as unique_authors,
     avg(length(content)) as avg_content_length,
     sum(length(tags)) as total_tags
-FROM events_local
+FROM nostr.events_local
 GROUP BY date, kind
 ORDER BY date DESC, event_count DESC`,
 });
@@ -89,7 +88,7 @@ SELECT
     min(created_at) as earliest_event,
     max(created_at) as latest_event,
     uniq(pubkey) as unique_authors
-FROM events_local
+FROM nostr.events_local
 WHERE relay_source != ''
 GROUP BY relay_source
 ORDER BY event_count DESC`,
@@ -102,7 +101,7 @@ SELECT
     count() as occurrence_count,
     uniq(event_id) as unique_events,
     avg(tag_length) as avg_tag_length
-FROM event_tags_flat
+FROM nostr.event_tags_flat
 GROUP BY tag_name
 ORDER BY occurrence_count DESC`,
 });
