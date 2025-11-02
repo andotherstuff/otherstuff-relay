@@ -318,7 +318,7 @@ async function sendResponse(connId: string, msg: any): Promise<void> {
     connId,
     msg,
   };
-  await redis.lPush(`nostr:responses:${connId}`, JSON.stringify(response));
+  await redis.rPush(`nostr:responses:${connId}`, JSON.stringify(response));
 }
 
 // Main processing loop

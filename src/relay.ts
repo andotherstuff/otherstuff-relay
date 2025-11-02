@@ -169,17 +169,17 @@ export class NostrRelay {
     const params: Record<string, unknown> = {};
 
     if (filter.ids && filter.ids.length > 0) {
-      conditions.push(`id IN {ids:Array(String)}`);
+      conditions.push(`id IN ({ids:Array(String)})`);
       params.ids = filter.ids;
     }
 
     if (filter.authors && filter.authors.length > 0) {
-      conditions.push(`pubkey IN {authors:Array(String)}`);
+      conditions.push(`pubkey IN ({authors:Array(String)})`);
       params.authors = filter.authors;
     }
 
     if (filter.kinds && filter.kinds.length > 0) {
-      conditions.push(`kind IN {kinds:Array(UInt32)}`);
+      conditions.push(`kind IN ({kinds:Array(UInt32)})`);
       params.kinds = filter.kinds;
     }
 
@@ -200,7 +200,7 @@ export class NostrRelay {
         const paramName = `tag_${tagName}`;
         const tagNameParam = `tagname_${tagName}`;
         conditions.push(
-          `arrayExists(tag -> tag[1] = {${tagNameParam}:String} AND has({${paramName}:Array(String)}, tag[2]), tags)`,
+          `arrayExists(tag -> tag[1] = {${tagNameParam}:String} AND has(({${paramName}:Array(String)}), tag[2]), tags)`,
         );
         params[paramName] = values;
         params[tagNameParam] = tagName;
