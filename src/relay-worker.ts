@@ -15,7 +15,7 @@ const config = new Config(Deno.env);
 
 // ClickHouse client
 const clickhouse = createClient({
-  url: config.databaseUrl,
+  url: config.getClickHouseDatabaseUrl(),
 });
 
 // Redis client
@@ -55,6 +55,39 @@ async function verifyNostrEvent(event: NostrEvent): Promise<boolean> {
 }
 
 async function queryEvents(filter: NostrFilter): Promise<NostrEvent[]> {
+  const limit = Math.min(filter.limit || 500, 5000);
+  
+  // Extract tag filters
+  const tagFilters: Array<{ name: string; values: string[] }> = [];
+  const nonTagFilter: NostrFilter = {};
+  
+  // Copy non-tag filters
+  if (filter.ids) nonTagFilter.ids = filter.ids;
+  if (filter.authors) nonTagFilter.authors = filter.authors;
+  if (filter.kinds) nonTagFilter.kinds = filter.kinds;
+  if (filter.since) nonTagFilter.since = filter.since;
+  if (filter.until) nonTagFilter.until = filter.until;
+  if (filter.limit) nonTagFilter.limit = filter.limit;
+  if (filter.search) nonTagFilter.search = filter.search;
+  
+  // Extract tag filters
+  for (const [key, values] of Object.entries(filter)) {
+    if (key.startsWith("#") && Array.isArray(values) && values.length > 0) {
+      const tagName = key.substring(1);
+      tagFilters.push({ name: tagName, values });
+    }
+  }
+
+  // If we have tag filters, use the flattened tag view for better performance
+  if (tagFilters.length > 0) {
+    return await queryEventsWithTags(filter, tagFilters, limit);
+  }
+
+  // For non-tag queries, use the main table
+  return await queryEventsSimple(nonTagFilter, limit);
+}
+
+async function queryEventsSimple(filter: NostrFilter, limit: number): Promise<NostrEvent[]> {
   const conditions: string[] = [];
   const params: Record<string, unknown> = {};
 
@@ -69,7 +102,7 @@ async function queryEvents(filter: NostrFilter): Promise<NostrEvent[]> {
   }
 
   if (filter.kinds && filter.kinds.length > 0) {
-    conditions.push(`kind IN ({kinds:Array(UInt32)})`);
+    conditions.push(`kind IN ({kinds:Array(UInt16)})`);
     params.kinds = filter.kinds;
   }
 
@@ -83,25 +116,10 @@ async function queryEvents(filter: NostrFilter): Promise<NostrEvent[]> {
     params.until = filter.until;
   }
 
-  // Handle tag filters (#e, #p, etc.)
-  for (const [key, values] of Object.entries(filter)) {
-    if (key.startsWith("#") && Array.isArray(values) && values.length > 0) {
-      const tagName = key.substring(1);
-      const paramName = `tag_${tagName}`;
-      const tagNameParam = `tagname_${tagName}`;
-      conditions.push(
-        `arrayExists(tag -> tag[1] = {${tagNameParam}:String} AND has(({${paramName}:Array(String)}), tag[2]), tags)`,
-      );
-      params[paramName] = values;
-      params[tagNameParam] = tagName;
-    }
-  }
-
   const whereClause = conditions.length > 0
     ? `WHERE ${conditions.join(" AND ")}`
     : "";
 
-  const limit = Math.min(filter.limit || 500, 5000);
   params.limit = limit;
 
   const query = `
@@ -113,10 +131,107 @@ async function queryEvents(filter: NostrFilter): Promise<NostrEvent[]> {
       tags,
       content,
       sig
-    FROM nostr_events
+    FROM events_local
     ${whereClause}
     ORDER BY created_at DESC
     LIMIT {limit:UInt32}
+  `;
+
+  const resultSet = await clickhouse.query({
+    query,
+    query_params: params,
+    format: "JSONEachRow",
+  });
+
+  const data = await resultSet.json<{
+    id: string;
+    pubkey: string;
+    created_at: number;
+    kind: number;
+    tags: string[][];
+    content: string;
+    sig: string;
+  }>();
+
+  return data.map((row) => ({
+    id: row.id,
+    pubkey: row.pubkey,
+    created_at: row.created_at,
+    kind: row.kind,
+    tags: row.tags,
+    content: row.content,
+    sig: row.sig,
+  }));
+}
+
+async function queryEventsWithTags(
+  filter: NostrFilter, 
+  tagFilters: Array<{ name: string; values: string[] }>, 
+  limit: number
+): Promise<NostrEvent[]> {
+  // Build conditions for tag filters using flattened table
+  const tagConditions: string[] = [];
+  const params: Record<string, unknown> = {};
+
+  for (let i = 0; i < tagFilters.length; i++) {
+    const { name, values } = tagFilters[i];
+    const paramName = `tag_values_${i}`;
+    const tagNameParam = `tag_name_${i}`;
+    
+    tagConditions.push(`tag_name = {${tagNameParam}:String} AND tag_value_1 IN ({${paramName}:Array(String)})`);
+    params[paramName] = values;
+    params[tagNameParam] = name;
+  }
+
+  const tagWhereClause = tagConditions.join(" OR ");
+
+  // Build additional conditions
+  const otherConditions: string[] = [];
+  
+  if (filter.authors && filter.authors.length > 0) {
+    otherConditions.push(`pubkey IN ({authors:Array(String)})`);
+    params.authors = filter.authors;
+  }
+
+  if (filter.kinds && filter.kinds.length > 0) {
+    otherConditions.push(`kind IN ({kinds:Array(UInt16)})`);
+    params.kinds = filter.kinds;
+  }
+
+  if (filter.since) {
+    otherConditions.push(`created_at >= {since:DateTime}`);
+    params.since = new Date(filter.since * 1000);
+  }
+
+  if (filter.until) {
+    otherConditions.push(`created_at <= {until:DateTime}`);
+    params.until = new Date(filter.until * 1000);
+  }
+
+  const allConditions = [tagWhereClause, ...otherConditions];
+  const whereClause = `WHERE ${allConditions.join(" AND ")}`;
+
+  params.limit = limit;
+
+  // Query using the flattened tag view with JOIN to main table
+  const query = `
+    SELECT DISTINCT
+      e.id,
+      e.pubkey,
+      toUnixTimestamp(e.created_at) as created_at,
+      e.kind,
+      e.tags,
+      e.content,
+      e.sig
+    FROM events_local e
+    INNER JOIN (
+      SELECT event_id
+      FROM event_tags_flat
+      ${whereClause}
+      ORDER BY created_at DESC
+      LIMIT {limit:UInt32}
+    ) t ON e.id = t.event_id
+    ORDER BY e.created_at DESC
   `;
 
   const resultSet = await clickhouse.query({

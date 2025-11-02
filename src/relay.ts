@@ -184,13 +184,13 @@ export class NostrRelay {
     }
 
     if (filter.since) {
-      conditions.push(`created_at >= {since:UInt32}`);
-      params.since = filter.since;
+      conditions.push(`created_at >= {since:DateTime}`);
+      params.since = new Date(filter.since * 1000);
     }
 
     if (filter.until) {
-      conditions.push(`created_at <= {until:UInt32}`);
-      params.until = filter.until;
+      conditions.push(`created_at <= {until:DateTime}`);
+      params.until = new Date(filter.until * 1000);
     }
 
     // Handle tag filters (#e, #p, etc.)
@@ -218,12 +218,12 @@ export class NostrRelay {
       SELECT
         id,
         pubkey,
-        created_at,
+        toUnixTimestamp(created_at) as created_at,
         kind,
         tags,
         content,
         sig
-      FROM nostr_events
+      FROM events_local
       ${whereClause}
       ORDER BY created_at DESC
       LIMIT {limit:UInt32}
