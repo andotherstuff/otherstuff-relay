@@ -139,7 +139,7 @@ app.get("/health", async (c) => {
 });
 
 // WebSocket endpoint
-app.get("/", (c) => {
+app.get("/", async (c) => {
   const upgrade = c.req.header("upgrade");
   if (upgrade !== "websocket") {
     return c.text("Use a Nostr client to connect", 400);
@@ -147,34 +147,24 @@ app.get("/", (c) => {
 
   const { socket, response } = Deno.upgradeWebSocket(c.req.raw);
   const connId = crypto.randomUUID();
-  let responsePoller: number | null = null;
+  
+  // Create a dedicated Redis subscriber for this WebSocket connection
+  const subscriber = redis.duplicate();
+  await subscriber.connect();
 
-  socket.onopen = () => {
+  socket.onopen = async () => {
     metrics.incrementConnections();
     connectionsGauge.inc();
 
-    // Start polling for responses from relay workers
-    responsePoller = setInterval(async () => {
+    // Subscribe to responses for this connection using pub/sub
+    await subscriber.subscribe(`nostr:responses:${connId}`, (message) => {
       try {
-        // Non-blocking pop of responses
-        const responses = await redis.lPopCount(
-          `nostr:responses:${connId}`,
-          100,
-        );
-        if (responses && responses.length > 0) {
-          for (const responseJson of responses) {
-            try {
-              const { msg } = JSON.parse(responseJson);
-              send(msg);
-            } catch (err) {
-              console.error("Error parsing response:", err);
-            }
-          }
-        }
+        const msg = JSON.parse(message);
+        send(msg);
       } catch (err) {
-        console.error("Error polling responses:", err);
+        console.error("Error parsing response:", err);
       }
-    }, 10); // Poll every 10ms for low latency
+    });
   };
 
   socket.onmessage = async (e) => {
@@ -198,9 +188,12 @@ app.get("/", (c) => {
     metrics.incrementConnections(-1);
     connectionsGauge.dec();
 
-    // Stop polling for responses
-    if (responsePoller !== null) {
-      clearInterval(responsePoller);
+    // Unsubscribe and close the subscriber connection
+    try {
+      await subscriber.unsubscribe(`nostr:responses:${connId}`);
+      await subscriber.quit();
+    } catch (err) {
+      console.error("Error cleaning up subscriber:", err);
     }
 
     // Send disconnect message to relay workers for cleanup
@@ -214,13 +207,6 @@ app.get("/", (c) => {
       );
     } catch (err) {
       console.error("Error sending disconnect:", err);
-    }
-
-    // Clean up response queue
-    try {
-      await redis.del(`nostr:responses:${connId}`);
-    } catch (err) {
-      console.error("Error cleaning up responses:", err);
     }
   };
 

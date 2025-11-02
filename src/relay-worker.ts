@@ -472,11 +472,8 @@ function matchesFilter(event: NostrEvent, filter: NostrFilter): boolean {
 
 // deno-lint-ignore no-explicit-any
 async function sendResponse(connId: string, msg: any): Promise<void> {
-  const response = {
-    connId,
-    msg,
-  };
-  await redis.rPush(`nostr:responses:${connId}`, JSON.stringify(response));
+  // Use pub/sub instead of queues - messages are only relevant while client is connected
+  await redis.publish(`nostr:responses:${connId}`, JSON.stringify(msg));
 }
 
 // Main processing loop
