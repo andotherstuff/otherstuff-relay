@@ -4,14 +4,14 @@
 import { createClient } from "@clickhouse/client-web";
 import { createClient as createRedisClient } from "redis";
 import { Config } from "./config.ts";
-import { initializeMetrics, getMetricsInstance } from "./metrics.ts";
+import { getMetricsInstance, initializeMetrics } from "./metrics.ts";
 import type { NostrEvent } from "@nostrify/nostrify";
 
 const config = new Config(Deno.env);
 
 // ClickHouse client
 const clickhouse = createClient({
-  url: config.getClickHouseDatabaseUrl(),
+  url: config.databaseUrl,
 });
 
 // Redis client
@@ -53,15 +53,15 @@ async function insertBatch(events: NostrEvent[]) {
     });
 
     console.log(`✅ Inserted ${events.length} events into ClickHouse`);
-    
+
     // Increment events stored counter
     await metrics.incrementEventsStored(events.length);
   } catch (error) {
     console.error("❌ Failed to insert batch:", error);
-    
+
     // Increment events failed counter
     await metrics.incrementEventsFailed(events.length);
-    
+
     // Push failed events back to queue for retry
     for (const event of events) {
       await redis.rPush("nostr:events:queue", JSON.stringify(event));
@@ -107,7 +107,7 @@ async function processEvents() {
 // Graceful shutdown
 const shutdown = async () => {
   console.log(`Shutting down storage worker ${WORKER_ID}...`);
-  
+
   try {
     // Process any remaining events in the queue
     const results = await redis.lPopCount("nostr:events:queue", BATCH_SIZE);

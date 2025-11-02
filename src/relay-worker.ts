@@ -8,14 +8,14 @@ import { initNostrWasm } from "nostr-wasm";
 import { createClient } from "@clickhouse/client-web";
 import { createClient as createRedisClient } from "redis";
 import { Config } from "./config.ts";
-import { initializeMetrics, getMetricsInstance } from "./metrics.ts";
+import { getMetricsInstance, initializeMetrics } from "./metrics.ts";
 import type { NostrEvent, NostrFilter } from "@nostrify/nostrify";
 
 const config = new Config(Deno.env);
 
 // ClickHouse client
 const clickhouse = createClient({
-  url: config.getClickHouseDatabaseUrl(),
+  url: config.databaseUrl,
 });
 
 // Redis client
@@ -56,11 +56,11 @@ async function verifyNostrEvent(event: NostrEvent): Promise<boolean> {
 
 async function queryEvents(filter: NostrFilter): Promise<NostrEvent[]> {
   const limit = Math.min(filter.limit || 500, 5000);
-  
+
   // Extract tag filters
   const tagFilters: Array<{ name: string; values: string[] }> = [];
   const nonTagFilter: NostrFilter = {};
-  
+
   // Copy non-tag filters
   if (filter.ids) nonTagFilter.ids = filter.ids;
   if (filter.authors) nonTagFilter.authors = filter.authors;
@@ -69,7 +69,7 @@ async function queryEvents(filter: NostrFilter): Promise<NostrEvent[]> {
   if (filter.until) nonTagFilter.until = filter.until;
   if (filter.limit) nonTagFilter.limit = filter.limit;
   if (filter.search) nonTagFilter.search = filter.search;
-  
+
   // Extract tag filters
   for (const [key, values] of Object.entries(filter)) {
     if (key.startsWith("#") && Array.isArray(values) && values.length > 0) {
@@ -87,7 +87,10 @@ async function queryEvents(filter: NostrFilter): Promise<NostrEvent[]> {
   return await queryEventsSimple(nonTagFilter, limit);
 }
 
-async function queryEventsSimple(filter: NostrFilter, limit: number): Promise<NostrEvent[]> {
+async function queryEventsSimple(
+  filter: NostrFilter,
+  limit: number,
+): Promise<NostrEvent[]> {
   const conditions: string[] = [];
   const params: Record<string, unknown> = {};
 
@@ -165,9 +168,9 @@ async function queryEventsSimple(filter: NostrFilter, limit: number): Promise<No
 }
 
 async function queryEventsWithTags(
-  filter: NostrFilter, 
-  tagFilters: Array<{ name: string; values: string[] }>, 
-  limit: number
+  filter: NostrFilter,
+  tagFilters: Array<{ name: string; values: string[] }>,
+  limit: number,
 ): Promise<NostrEvent[]> {
   // Build conditions for tag filters using flattened table
   const tagConditions: string[] = [];
@@ -177,8 +180,10 @@ async function queryEventsWithTags(
     const { name, values } = tagFilters[i];
     const paramName = `tag_values_${i}`;
     const tagNameParam = `tag_name_${i}`;
-    
-    tagConditions.push(`tag_name = {${tagNameParam}:String} AND tag_value_1 IN ({${paramName}:Array(String)})`);
+
+    tagConditions.push(
+      `tag_name = {${tagNameParam}:String} AND tag_value_1 IN ({${paramName}:Array(String)})`,
+    );
     params[paramName] = values;
     params[tagNameParam] = name;
   }
@@ -187,7 +192,7 @@ async function queryEventsWithTags(
 
   // Build additional conditions
   const otherConditions: string[] = [];
-  
+
   if (filter.authors && filter.authors.length > 0) {
     otherConditions.push(`pubkey IN ({authors:Array(String)})`);
     params.authors = filter.authors;
@@ -267,10 +272,10 @@ async function handleEvent(
 ): Promise<void> {
   // Increment events received counter
   await metrics.incrementEventsReceived();
-  
+
   // Increment events by kind counter
   await metrics.incrementEventByKind(event.kind);
-  
+
   // Validate event
   if (!await verifyNostrEvent(event)) {
     await metrics.incrementEventsInvalid();
@@ -319,7 +324,7 @@ async function handleReq(
 ): Promise<void> {
   // Increment queries counter
   await metrics.incrementQueriesTotal();
-  
+
   // Limit filters per subscription
   if (filters.length > 10) {
     filters = filters.slice(0, 10);
@@ -331,7 +336,7 @@ async function handleReq(
 
   // Also store in Redis for subscription tracking across workers
   await redis.hSet(`nostr:subs:${connId}`, subId, JSON.stringify(filters));
-  
+
   // Update subscription count
   const totalSubs = await countTotalSubscriptions();
   await metrics.setSubscriptions(totalSubs);
@@ -369,7 +374,7 @@ async function handleClose(connId: string, subId: string): Promise<void> {
   const key = `${connId}:${subId}`;
   subscriptions.delete(key);
   await redis.hDel(`nostr:subs:${connId}`, subId);
-  
+
   // Update subscription count
   const totalSubs = await countTotalSubscriptions();
   await metrics.setSubscriptions(totalSubs);
@@ -390,7 +395,7 @@ async function handleDisconnect(connId: string): Promise<void> {
 
   // Remove from Redis
   await redis.del(`nostr:subs:${connId}`);
-  
+
   // Update subscription count
   const totalSubs = await countTotalSubscriptions();
   await metrics.setSubscriptions(totalSubs);
@@ -400,12 +405,12 @@ async function handleDisconnect(connId: string): Promise<void> {
 async function countTotalSubscriptions(): Promise<number> {
   const keys = await redis.keys("nostr:subs:*");
   let total = 0;
-  
+
   for (const key of keys) {
     const subCount = await redis.hLen(key);
     total += subCount;
   }
-  
+
   return total;
 }
 

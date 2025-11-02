@@ -129,13 +129,14 @@ PORT=8000                                    # HTTP server port
 
 ```bash
 # ClickHouse connection URL
-# Format: http://[user[:password]@]host[:port]
-# Note: The schema will automatically use the 'nostr' database
-DATABASE_URL=http://localhost:8123
+# Format: http://[user[:password]@]host[:port]/database
+# If no database is specified, defaults to 'nostr'
+DATABASE_URL=http://localhost:8123/nostr
 
 # Examples:
-# DATABASE_URL=http://default:password@localhost:8123
-# DATABASE_URL=http://user@clickhouse.example.com:8123
+# DATABASE_URL=http://default:password@localhost:8123/nostr
+# DATABASE_URL=http://user@clickhouse.example.com:8123/my_relay_db
+# DATABASE_URL=http://localhost:8123  # Uses default 'nostr' database
 
 # Optional: Source relay identifier for tracking event origins
 RELAY_SOURCE=wss://your-relay-domain.com
@@ -252,7 +253,7 @@ FROM events_local
 Additional views provide analytics and monitoring:
 
 - `event_stats` - Daily event counts by kind
-- `relay_stats` - Source relay statistics  
+- `relay_stats` - Source relay statistics
 - `tag_stats` - Tag frequency analysis
 
 The tables are automatically created on server startup. Events are inserted in

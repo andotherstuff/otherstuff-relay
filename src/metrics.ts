@@ -124,31 +124,39 @@ export class RedisMetrics {
   }
 
   async incrementEventByKind(kind: number, delta: number = 1): Promise<void> {
-    await this.redis.hIncrBy(METRICS_KEYS.events_by_kind, kind.toString(), delta);
+    await this.redis.hIncrBy(
+      METRICS_KEYS.events_by_kind,
+      kind.toString(),
+      delta,
+    );
   }
 
   async getEventsByKind(): Promise<Record<string, number>> {
     const hashData = await this.redis.hGetAll(METRICS_KEYS.events_by_kind);
     const result: Record<string, number> = {};
-    
+
     for (const [kind, count] of Object.entries(hashData)) {
-      result[kind] = typeof count === 'string' ? parseInt(count, 10) : 0;
+      result[kind] = typeof count === "string" ? parseInt(count, 10) : 0;
     }
-    
+
     return result;
   }
 
   async getAllMetrics(): Promise<Record<string, number>> {
-    const keys = Object.values(METRICS_KEYS).filter(k => k !== METRICS_KEYS.events_by_kind);
+    const keys = Object.values(METRICS_KEYS).filter((k) =>
+      k !== METRICS_KEYS.events_by_kind
+    );
     const values = await this.redis.mGet(keys);
-    
+
     const metrics: Record<string, number> = {};
     Object.entries(METRICS_KEYS).forEach(([key, redisKey], index) => {
       if (redisKey !== METRICS_KEYS.events_by_kind) {
-        metrics[key] = values[index] ? parseInt(values[index] as string, 10) : 0;
+        metrics[key] = values[index]
+          ? parseInt(values[index] as string, 10)
+          : 0;
       }
     });
-    
+
     return metrics;
   }
 }
@@ -172,81 +180,87 @@ export function getMetricsInstance(): RedisMetrics {
 
 // Legacy counter exports for backward compatibility (these will be no-ops)
 export const eventsReceivedCounter = {
-  inc: (delta?: number) => getMetricsInstance().incrementEventsReceived(delta || 1),
+  inc: (delta?: number) =>
+    getMetricsInstance().incrementEventsReceived(delta || 1),
 };
 
 export const eventsStoredCounter = {
-  inc: (delta?: number) => getMetricsInstance().incrementEventsStored(delta || 1),
+  inc: (delta?: number) =>
+    getMetricsInstance().incrementEventsStored(delta || 1),
 };
 
 export const eventsFailedCounter = {
-  inc: (delta?: number) => getMetricsInstance().incrementEventsFailed(delta || 1),
+  inc: (delta?: number) =>
+    getMetricsInstance().incrementEventsFailed(delta || 1),
 };
 
 export const eventsInvalidCounter = {
-  inc: (delta?: number) => getMetricsInstance().incrementEventsInvalid(delta || 1),
+  inc: (delta?: number) =>
+    getMetricsInstance().incrementEventsInvalid(delta || 1),
 };
 
 export const eventsRejectedCounter = {
-  inc: (delta?: number) => getMetricsInstance().incrementEventsRejected(delta || 1),
+  inc: (delta?: number) =>
+    getMetricsInstance().incrementEventsRejected(delta || 1),
 };
 
 export const queriesCounter = {
-  inc: (delta?: number) => getMetricsInstance().incrementQueriesTotal(delta || 1),
+  inc: (delta?: number) =>
+    getMetricsInstance().incrementQueriesTotal(delta || 1),
 };
 
 export async function getMetrics(): Promise<string> {
   // Get metrics instance
   const metrics = getMetricsInstance();
-  
+
   // Get all metrics from Redis
   const allMetrics = await metrics.getAllMetrics();
   const eventsByKind = await metrics.getEventsByKind();
-  
+
   // Clear the registry to avoid duplicate metrics
   register.clear();
-  
+
   // Update gauges with Redis values
   connectionsGauge.set(allMetrics.connections_active);
   subscriptionsGauge.set(allMetrics.subscriptions_active);
-  
+
   // Create counters with Redis values
   new Counter({
     name: "nostr_events_received",
     help: "Total events received",
     registers: [register],
   }).inc(allMetrics.events_received);
-  
+
   new Counter({
     name: "nostr_events_stored",
     help: "Total events successfully stored",
     registers: [register],
   }).inc(allMetrics.events_stored);
-  
+
   new Counter({
     name: "nostr_events_failed",
     help: "Total events failed to store",
     registers: [register],
   }).inc(allMetrics.events_failed);
-  
+
   new Counter({
     name: "nostr_events_invalid",
     help: "Total events invalid",
     registers: [register],
   }).inc(allMetrics.events_invalid);
-  
+
   new Counter({
     name: "nostr_events_rejected",
     help: "Total events rejected",
     registers: [register],
   }).inc(allMetrics.events_rejected);
-  
+
   new Counter({
     name: "nostr_queries_total",
     help: "Total queries processed",
     registers: [register],
   }).inc(allMetrics.queries_total);
-  
+
   // Event kind metrics - create a counter for each kind
   const eventsByKindCounter = new Counter({
     name: "nostr_events_by_kind_total",
@@ -254,10 +268,10 @@ export async function getMetrics(): Promise<string> {
     labelNames: ["kind"],
     registers: [register],
   });
-  
+
   for (const [kind, count] of Object.entries(eventsByKind)) {
     eventsByKindCounter.inc({ kind }, count);
   }
-  
+
   return await register.metrics();
 }

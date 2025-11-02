@@ -2,26 +2,26 @@ import { Hono } from "hono";
 import { createClient } from "@clickhouse/client-web";
 import { createClient as createRedisClient } from "redis";
 import { Config } from "./config.ts";
-import { connectionsGauge, getMetrics, register, initializeMetrics, getMetricsInstance } from "./metrics.ts";
+import {
+  connectionsGauge,
+  getMetrics,
+  getMetricsInstance,
+  initializeMetrics,
+  register,
+} from "./metrics.ts";
 import type { NostrRelayMsg } from "@nostrify/nostrify";
 
 // Instantiate config with Deno.env
 const config = new Config(Deno.env);
 
-// Instantiate ClickHouse client with config (connect to default database first)
+// Now connect to the specific database
 const clickhouse = createClient({
-  url: config.getClickHouseUrl(),
+  url: config.databaseUrl,
 });
 
-// Initialize ClickHouse database and tables
-// Create the nostr database if it doesn't exist
+// Initialize ClickHouse tables
 await clickhouse.query({
-  query: "CREATE DATABASE IF NOT EXISTS nostr",
-});
-
-// Create the main events table using the new schema
-await clickhouse.query({
-  query: `CREATE TABLE IF NOT EXISTS nostr.events_local (
+  query: `CREATE TABLE IF NOT EXISTS events_local (
     id String COMMENT '32-byte hex event ID (SHA-256 hash)',
     pubkey String COMMENT '32-byte hex public key of event creator',
     created_at UInt32 COMMENT 'Unix timestamp when event was created',
@@ -44,7 +44,7 @@ await clickhouse.query({
 
 // Create flattened tag materialized view for fast tag queries
 await clickhouse.query({
-  query: `CREATE MATERIALIZED VIEW IF NOT EXISTS nostr.event_tags_flat
+  query: `CREATE MATERIALIZED VIEW IF NOT EXISTS event_tags_flat
 ENGINE = MergeTree()
 ORDER BY (tag_name, tag_value_1, created_at, event_id)
 PARTITION BY toYYYYMM(toDateTime(created_at))
@@ -61,12 +61,12 @@ AS SELECT
     if(length(tag_array) >= 5, tag_array[5], '') as tag_value_4,
     length(tag_array) as tag_length,
     tag_array as tag_full
-FROM nostr.events_local`,
+FROM events_local`,
 });
 
 // Create statistics views for monitoring and analytics
 await clickhouse.query({
-  query: `CREATE VIEW IF NOT EXISTS nostr.event_stats AS
+  query: `CREATE VIEW IF NOT EXISTS event_stats AS
 SELECT
     toStartOfDay(toDateTime(created_at)) as date,
     kind,
@@ -74,13 +74,13 @@ SELECT
     uniq(pubkey) as unique_authors,
     avg(length(content)) as avg_content_length,
     sum(length(tags)) as total_tags
-FROM nostr.events_local
+FROM events_local
 GROUP BY date, kind
 ORDER BY date DESC, event_count DESC`,
 });
 
 await clickhouse.query({
-  query: `CREATE VIEW IF NOT EXISTS nostr.relay_stats AS
+  query: `CREATE VIEW IF NOT EXISTS relay_stats AS
 SELECT
     relay_source,
     count() as event_count,
@@ -88,20 +88,20 @@ SELECT
     min(toDateTime(created_at)) as earliest_event,
     max(toDateTime(created_at)) as latest_event,
     uniq(pubkey) as unique_authors
-FROM nostr.events_local
+FROM events_local
 WHERE relay_source != ''
 GROUP BY relay_source
 ORDER BY event_count DESC`,
 });
 
 await clickhouse.query({
-  query: `CREATE VIEW IF NOT EXISTS nostr.tag_stats AS
+  query: `CREATE VIEW IF NOT EXISTS tag_stats AS
 SELECT
     tag_name,
     count() as occurrence_count,
     uniq(event_id) as unique_events,
     avg(tag_length) as avg_tag_length
-FROM nostr.event_tags_flat
+FROM event_tags_flat
 GROUP BY tag_name
 ORDER BY occurrence_count DESC`,
 });
