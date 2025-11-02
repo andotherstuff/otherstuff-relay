@@ -55,6 +55,12 @@ async function verifyNostrEvent(event: NostrEvent): Promise<boolean> {
 }
 
 async function queryEvents(filter: NostrFilter): Promise<NostrEvent[]> {
+  // If limit is 0, skip the query (realtime-only subscription)
+  if (filter.limit === 0) {
+    return [];
+  }
+
+  // Default to 500, cap at 5000
   const limit = Math.min(filter.limit || 500, 5000);
 
   // Extract tag filters
@@ -230,13 +236,14 @@ async function queryEventsWithTags(
       e.sig
     FROM events_local e
     INNER JOIN (
-      SELECT event_id
+      SELECT DISTINCT event_id, created_at
       FROM event_tags_flat
       ${whereClause}
       ORDER BY created_at DESC
       LIMIT {limit:UInt32}
     ) t ON e.id = t.event_id
     ORDER BY e.created_at DESC
+    LIMIT {limit:UInt32}
   `;
 
   const resultSet = await clickhouse.query({
