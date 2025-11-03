@@ -203,7 +203,16 @@ app.get("/", (c) => {
       clearInterval(responsePoller);
     }
 
+    // Clean up response queue immediately to prevent memory leak
+    // Do this BEFORE sending disconnect to avoid race condition
+    try {
+      await redis.del(`nostr:responses:${connId}`);
+    } catch (err) {
+      console.error("Error cleaning up responses:", err);
+    }
+
     // Send disconnect message to relay workers for cleanup
+    // Workers will also attempt to delete the response queue
     try {
       await redis.lPush(
         "nostr:relay:queue",
@@ -214,13 +223,6 @@ app.get("/", (c) => {
       );
     } catch (err) {
       console.error("Error sending disconnect:", err);
-    }
-
-    // Clean up response queue
-    try {
-      await redis.del(`nostr:responses:${connId}`);
-    } catch (err) {
-      console.error("Error cleaning up responses:", err);
     }
   };
 

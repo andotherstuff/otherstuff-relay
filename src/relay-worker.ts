@@ -548,6 +548,9 @@ async function handleDisconnect(connId: string): Promise<void> {
   await redis.del(`nostr:sub:limits:${connId}`);
   await redis.del(`nostr:sub:eose:${connId}`);
 
+  // Clean up response queue to prevent memory leak
+  await redis.del(`nostr:responses:${connId}`);
+
   // Update subscription count
   const totalSubs = await countTotalSubscriptions();
   await metrics.setSubscriptions(totalSubs);
@@ -671,7 +674,16 @@ async function sendResponse(connId: string, msg: any): Promise<void> {
     connId,
     msg,
   };
-  await redis.rPush(`nostr:responses:${connId}`, JSON.stringify(response));
+  const queueKey = `nostr:responses:${connId}`;
+
+  // Use a pipeline to push and set TTL atomically
+  // TTL of 60 seconds as a safety net for orphaned queues
+  // Normal connections consume responses within milliseconds
+  // If a queue exists for 60 seconds with no consumer, it's orphaned
+  const pipeline = redis.multi();
+  pipeline.rPush(queueKey, JSON.stringify(response));
+  pipeline.expire(queueKey, 60);
+  await pipeline.exec();
 }
 
 // Main processing loop
