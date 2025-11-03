@@ -148,20 +148,25 @@ app.get("/", (c) => {
   const { socket, response } = Deno.upgradeWebSocket(c.req.raw);
   const connId = crypto.randomUUID();
   let responsePoller: number | null = null;
+  const queueKey = `nostr:responses:${connId}`;
 
-  socket.onopen = () => {
+  socket.onopen = async () => {
     metrics.incrementConnections();
     connectionsGauge.inc();
+
+    // Set initial TTL on response queue as safety net for orphaned queues
+    // This will be reset whenever we successfully consume messages
+    await redis.expire(queueKey, 60);
 
     // Start polling for responses from relay workers
     responsePoller = setInterval(async () => {
       try {
         // Non-blocking pop of responses
-        const responses = await redis.lPopCount(
-          `nostr:responses:${connId}`,
-          100,
-        );
+        const responses = await redis.lPopCount(queueKey, 100);
         if (responses && responses.length > 0) {
+          // Reset TTL since we're actively consuming - this is a live connection
+          await redis.expire(queueKey, 60);
+
           for (const responseJson of responses) {
             try {
               const { msg } = JSON.parse(responseJson);
@@ -203,16 +208,15 @@ app.get("/", (c) => {
       clearInterval(responsePoller);
     }
 
-    // Clean up all connection-related data in Redis
+    // Clean up all connection-related data in Redis with a single command
     try {
-      // Clean up subscriptions and tracking data
-      await redis.del(`nostr:subs:${connId}`);
-      await redis.del(`nostr:sub:counts:${connId}`);
-      await redis.del(`nostr:sub:limits:${connId}`);
-      await redis.del(`nostr:sub:eose:${connId}`);
-
-      // Clean up response queue to prevent memory leak
-      await redis.del(`nostr:responses:${connId}`);
+      await redis.del([
+        `nostr:subs:${connId}`,
+        `nostr:sub:counts:${connId}`,
+        `nostr:sub:limits:${connId}`,
+        `nostr:sub:eose:${connId}`,
+        queueKey,
+      ]);
     } catch (err) {
       console.error("Error cleaning up connection data:", err);
     }
