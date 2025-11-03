@@ -5,6 +5,7 @@ import { createClient } from "@clickhouse/client-web";
 import { createClient as createRedisClient } from "redis";
 import { Config } from "./config.ts";
 import { getMetricsInstance, initializeMetrics } from "./metrics.ts";
+import { ClickhouseRelay } from "./clickhouse.ts";
 import type { NostrEvent } from "@nostrify/nostrify";
 
 const config = new Config(Deno.env);
@@ -26,6 +27,11 @@ initializeMetrics(redis);
 // Get metrics instance for use in this module
 const metrics = getMetricsInstance();
 
+// Initialize ClickhouseRelay (no validation needed for storage)
+const relay = new ClickhouseRelay(clickhouse, {
+  relaySource: config.relaySource,
+});
+
 const WORKER_ID = crypto.randomUUID().slice(0, 8);
 console.log(`🔧 Storage worker ${WORKER_ID} started, waiting for events...`);
 
@@ -36,21 +42,7 @@ async function insertBatch(events: NostrEvent[]) {
   if (events.length === 0) return;
 
   try {
-    await clickhouse.insert({
-      table: "events_local",
-      values: events.map((event) => ({
-        id: event.id,
-        pubkey: event.pubkey,
-        created_at: event.created_at, // Keep as UInt32 Unix timestamp
-        kind: event.kind,
-        tags: event.tags,
-        content: event.content,
-        sig: event.sig,
-        indexed_at: Math.floor(Date.now() / 1000), // Current Unix timestamp
-        relay_source: config.relaySource,
-      })),
-      format: "JSONEachRow",
-    });
+    await relay.eventBatch(events);
 
     console.log(`✅ Inserted ${events.length} events into ClickHouse`);
 
@@ -137,7 +129,7 @@ const shutdown = async () => {
   }
 
   try {
-    await clickhouse.close();
+    await relay.close();
   } catch (error) {
     console.error("Error closing ClickHouse connection:", error);
   }

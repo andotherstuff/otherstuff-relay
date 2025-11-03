@@ -1,15 +1,16 @@
 /**
- * Relay worker process that processes Nostr relay messages from Redis queue
- * Handles validation, database operations, and sends responses back via Redis
+ * Relay worker process that bridges Redis queues with ClickhouseRelay
+ * Handles message routing, subscription state, and response delivery
  */
 import { NSchema as n } from "@nostrify/nostrify";
-import { getFilterLimit } from "nostr-tools";
+import { getFilterLimit, matchFilters } from "nostr-tools";
 import { setNostrWasm, verifyEvent } from "nostr-tools/wasm";
 import { initNostrWasm } from "nostr-wasm";
 import { createClient } from "@clickhouse/client-web";
 import { createClient as createRedisClient } from "redis";
 import { Config } from "./config.ts";
 import { getMetricsInstance, initializeMetrics } from "./metrics.ts";
+import { ClickhouseRelay } from "./clickhouse.ts";
 import type {
   NostrEvent,
   NostrFilter,
@@ -40,6 +41,11 @@ const wasmInitialized = (async () => {
   const wasm = await initNostrWasm();
   setNostrWasm(wasm);
 })();
+
+// Initialize ClickhouseRelay (events are pre-validated before insertion)
+const relay = new ClickhouseRelay(clickhouse, {
+  relaySource: config.relaySource,
+});
 
 const WORKER_ID = crypto.randomUUID().slice(0, 8);
 console.log(`🔧 Relay worker ${WORKER_ID} started, waiting for messages...`);
@@ -88,14 +94,6 @@ function isEventTooOld(event: NostrEvent): boolean {
   return eventAge > config.broadcastMaxAge;
 }
 
-// In-memory subscription storage (shared across workers via Redis)
-// Each worker maintains its own view but publishes updates to Redis
-type Subscription = {
-  connId: string;
-  subId: string;
-  filters: NostrFilter[];
-};
-
 // Helper function to get the effective limit for a set of filters
 // Returns the maximum limit of all filters, or undefined if no limit
 function getEffectiveLimit(filters: NostrFilter[]): number | undefined {
@@ -105,230 +103,6 @@ function getEffectiveLimit(filters: NostrFilter[]): number | undefined {
   );
 
   return limit === Infinity ? undefined : limit;
-}
-
-async function verifyNostrEvent(event: NostrEvent): Promise<boolean> {
-  await wasmInitialized;
-  return verifyEvent(event);
-}
-
-async function queryEvents(filter: NostrFilter): Promise<NostrEvent[]> {
-  // If limit is 0, skip the query (realtime-only subscription)
-  if (filter.limit === 0) {
-    return [];
-  }
-
-  // Default to 500, cap at 5000
-  const limit = Math.min(filter.limit || 500, 5000);
-
-  // Extract tag filters
-  const tagFilters: Array<{ name: string; values: string[] }> = [];
-  const nonTagFilter: NostrFilter = {};
-
-  // Copy non-tag filters
-  if (filter.ids) nonTagFilter.ids = filter.ids;
-  if (filter.authors) nonTagFilter.authors = filter.authors;
-  if (filter.kinds) nonTagFilter.kinds = filter.kinds;
-  if (filter.since) nonTagFilter.since = filter.since;
-  if (filter.until) nonTagFilter.until = filter.until;
-  if (filter.limit) nonTagFilter.limit = filter.limit;
-  if (filter.search) nonTagFilter.search = filter.search;
-
-  // Extract tag filters
-  for (const [key, values] of Object.entries(filter)) {
-    if (key.startsWith("#") && Array.isArray(values) && values.length > 0) {
-      const tagName = key.substring(1);
-      tagFilters.push({ name: tagName, values });
-    }
-  }
-
-  // If we have tag filters, use the flattened tag view for better performance
-  if (tagFilters.length > 0) {
-    return await queryEventsWithTags(filter, tagFilters, limit);
-  }
-
-  // For non-tag queries, use the main table
-  return await queryEventsSimple(nonTagFilter, limit);
-}
-
-async function queryEventsSimple(
-  filter: NostrFilter,
-  limit: number,
-): Promise<NostrEvent[]> {
-  const conditions: string[] = [];
-  const params: Record<string, unknown> = {};
-
-  if (filter.ids && filter.ids.length > 0) {
-    conditions.push(`id IN ({ids:Array(String)})`);
-    params.ids = filter.ids;
-  }
-
-  if (filter.authors && filter.authors.length > 0) {
-    conditions.push(`pubkey IN ({authors:Array(String)})`);
-    params.authors = filter.authors;
-  }
-
-  if (filter.kinds && filter.kinds.length > 0) {
-    conditions.push(`kind IN ({kinds:Array(UInt16)})`);
-    params.kinds = filter.kinds;
-  }
-
-  if (filter.since) {
-    conditions.push(`created_at >= {since:UInt32}`);
-    params.since = filter.since;
-  }
-
-  if (filter.until) {
-    conditions.push(`created_at <= {until:UInt32}`);
-    params.until = filter.until;
-  }
-
-  const whereClause = conditions.length > 0
-    ? `WHERE ${conditions.join(" AND ")}`
-    : "";
-
-  params.limit = limit;
-
-  const query = `
-    SELECT
-      id,
-      pubkey,
-      created_at,
-      kind,
-      tags,
-      content,
-      sig
-    FROM events_local
-    ${whereClause}
-    ORDER BY created_at DESC
-    LIMIT {limit:UInt32}
-  `;
-
-  const resultSet = await clickhouse.query({
-    query,
-    query_params: params,
-    format: "JSONEachRow",
-  });
-
-  const data = await resultSet.json<{
-    id: string;
-    pubkey: string;
-    created_at: number;
-    kind: number;
-    tags: string[][];
-    content: string;
-    sig: string;
-  }>();
-
-  return data.map((row) => ({
-    id: row.id,
-    pubkey: row.pubkey,
-    created_at: row.created_at,
-    kind: row.kind,
-    tags: row.tags,
-    content: row.content,
-    sig: row.sig,
-  }));
-}
-
-async function queryEventsWithTags(
-  filter: NostrFilter,
-  tagFilters: Array<{ name: string; values: string[] }>,
-  limit: number,
-): Promise<NostrEvent[]> {
-  // Build conditions for tag filters using flattened table
-  const tagConditions: string[] = [];
-  const params: Record<string, unknown> = {};
-
-  for (let i = 0; i < tagFilters.length; i++) {
-    const { name, values } = tagFilters[i];
-    const paramName = `tag_values_${i}`;
-    const tagNameParam = `tag_name_${i}`;
-
-    tagConditions.push(
-      `tag_name = {${tagNameParam}:String} AND tag_value_1 IN ({${paramName}:Array(String)})`,
-    );
-    params[paramName] = values;
-    params[tagNameParam] = name;
-  }
-
-  const tagWhereClause = tagConditions.join(" OR ");
-
-  // Build additional conditions
-  const otherConditions: string[] = [];
-
-  if (filter.authors && filter.authors.length > 0) {
-    otherConditions.push(`pubkey IN ({authors:Array(String)})`);
-    params.authors = filter.authors;
-  }
-
-  if (filter.kinds && filter.kinds.length > 0) {
-    otherConditions.push(`kind IN ({kinds:Array(UInt16)})`);
-    params.kinds = filter.kinds;
-  }
-
-  if (filter.since) {
-    otherConditions.push(`created_at >= {since:DateTime}`);
-    params.since = new Date(filter.since * 1000);
-  }
-
-  if (filter.until) {
-    otherConditions.push(`created_at <= {until:DateTime}`);
-    params.until = new Date(filter.until * 1000);
-  }
-
-  const allConditions = [tagWhereClause, ...otherConditions];
-  const whereClause = `WHERE ${allConditions.join(" AND ")}`;
-
-  params.limit = limit;
-
-  // Query using the flattened tag view with JOIN to main table
-  const query = `
-    SELECT DISTINCT
-      e.id,
-      e.pubkey,
-      toUnixTimestamp(e.created_at) as created_at,
-      e.kind,
-      e.tags,
-      e.content,
-      e.sig
-    FROM events_local e
-    INNER JOIN (
-      SELECT DISTINCT event_id, created_at
-      FROM event_tags_flat
-      ${whereClause}
-      ORDER BY created_at DESC
-      LIMIT {limit:UInt32}
-    ) t ON e.id = t.event_id
-    ORDER BY e.created_at DESC
-    LIMIT {limit:UInt32}
-  `;
-
-  const resultSet = await clickhouse.query({
-    query,
-    query_params: params,
-    format: "JSONEachRow",
-  });
-
-  const data = await resultSet.json<{
-    id: string;
-    pubkey: string;
-    created_at: number;
-    kind: number;
-    tags: string[][];
-    content: string;
-    sig: string;
-  }>();
-
-  return data.map((row) => ({
-    id: row.id,
-    pubkey: row.pubkey,
-    created_at: row.created_at,
-    kind: row.kind,
-    tags: row.tags,
-    content: row.content,
-    sig: row.sig,
-  }));
 }
 
 async function handleEvent(
@@ -342,7 +116,8 @@ async function handleEvent(
   await metrics.incrementEventByKind(event.kind);
 
   // Validate event
-  if (!await verifyNostrEvent(event)) {
+  await wasmInitialized;
+  if (!verifyEvent(event)) {
     await metrics.incrementEventsInvalid();
     await sendResponse(connId, [
       "OK",
@@ -415,7 +190,7 @@ async function handleReq(
     filters = filters.slice(0, 10);
   }
 
-  // Also store in Redis for subscription tracking across workers
+  // Store in Redis for subscription tracking across workers
   await redis.hSet(`nostr:subs:${connId}`, subId, JSON.stringify(filters));
 
   // Initialize event count for this subscription
@@ -452,7 +227,7 @@ async function handleReq(
   // Query historical events for each filter
   const queryPromises = filters.map(async (filter) => {
     try {
-      const events = await queryEvents(filter);
+      const events = await relay.query([filter]);
 
       // Check if still needed before sending each event
       for (const event of events) {
@@ -556,7 +331,7 @@ async function broadcastEvent(event: NostrEvent): Promise<void> {
         const filters = JSON.parse(filtersJson) as NostrFilter[];
 
         // Check if event matches any filter
-        if (filters.some((filter) => matchesFilter(event, filter))) {
+        if (matchFilters(filters, event)) {
           // Atomically check count and increment (prevents race condition)
           const result = await redis.eval(
             CHECK_AND_INCREMENT_SCRIPT,
@@ -597,43 +372,6 @@ async function broadcastEvent(event: NostrEvent): Promise<void> {
       }
     }
   }
-}
-
-function matchesFilter(event: NostrEvent, filter: NostrFilter): boolean {
-  if (filter.ids && !filter.ids.includes(event.id)) {
-    return false;
-  }
-
-  if (filter.authors && !filter.authors.includes(event.pubkey)) {
-    return false;
-  }
-
-  if (filter.kinds && !filter.kinds.includes(event.kind)) {
-    return false;
-  }
-
-  if (filter.since && event.created_at < filter.since) {
-    return false;
-  }
-
-  if (filter.until && event.created_at > filter.until) {
-    return false;
-  }
-
-  // Check tag filters
-  for (const [key, values] of Object.entries(filter)) {
-    if (key.startsWith("#") && Array.isArray(values)) {
-      const tagName = key.substring(1);
-      const hasMatch = event.tags.some((tag) =>
-        tag[0] === tagName && values.includes(tag[1])
-      );
-      if (!hasMatch) {
-        return false;
-      }
-    }
-  }
-
-  return true;
 }
 
 async function sendResponse(connId: string, msg: NostrRelayMsg): Promise<void> {
