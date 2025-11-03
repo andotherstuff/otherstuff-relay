@@ -39,6 +39,22 @@ const wasmInitialized = (async () => {
 const WORKER_ID = crypto.randomUUID().slice(0, 8);
 console.log(`🔧 Relay worker ${WORKER_ID} started, waiting for messages...`);
 
+// Helper function to check if an event is ephemeral
+function isEphemeral(kind: number): boolean {
+  return kind >= 20000 && kind < 30000;
+}
+
+// Helper function to check if an event is too old to broadcast
+function isEventTooOld(event: NostrEvent): boolean {
+  if (config.broadcastMaxAge === 0) {
+    return false; // Age filtering disabled
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const eventAge = now - event.created_at;
+  return eventAge > config.broadcastMaxAge;
+}
+
 // In-memory subscription storage (shared across workers via Redis)
 // Each worker maintains its own view but publishes updates to Redis
 type Subscription = {
@@ -306,20 +322,40 @@ async function handleEvent(
     return;
   }
 
-  try {
-    // Push event to storage queue for batch processing by storage worker
-    await redis.lPush("nostr:events:queue", JSON.stringify(event));
-    await sendResponse(connId, ["OK", event.id, true, ""]);
+  // Check if event is ephemeral
+  const ephemeral = isEphemeral(event.kind);
+  const tooOld = isEventTooOld(event);
 
-    // Broadcast to subscribers
-    await broadcastEvent(event);
-  } catch (error) {
-    console.error("Failed to queue event:", error);
+  // Reject ephemeral events that are too old
+  if (ephemeral && tooOld) {
+    await metrics.incrementEventsRejected();
     await sendResponse(connId, [
       "OK",
       event.id,
       false,
-      "error: failed to queue event",
+      "rejected: event too old",
+    ]);
+    return;
+  }
+
+  try {
+    // Only store non-ephemeral events
+    // Ephemeral events are only broadcast, never stored
+    if (!ephemeral) {
+      await redis.lPush("nostr:events:queue", JSON.stringify(event));
+    }
+
+    await sendResponse(connId, ["OK", event.id, true, ""]);
+
+    // Broadcast to subscribers (will be filtered if too old)
+    await broadcastEvent(event);
+  } catch (error) {
+    console.error("Failed to process event:", error);
+    await sendResponse(connId, [
+      "OK",
+      event.id,
+      false,
+      "error: failed to process event",
     ]);
   }
 }
@@ -422,6 +458,11 @@ async function countTotalSubscriptions(): Promise<number> {
 }
 
 async function broadcastEvent(event: NostrEvent): Promise<void> {
+  // Don't broadcast events that are too old
+  if (isEventTooOld(event)) {
+    return;
+  }
+
   // Get all active connections
   const connIds = await redis.keys("nostr:subs:*");
 

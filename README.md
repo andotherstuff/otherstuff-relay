@@ -75,6 +75,9 @@ This architecture solves the validation bottleneck by:
   overhead
 - **Direct Database Access**: Efficient direct queries to ClickHouse for optimal
   performance
+- **Event Age Filtering**: Configurable age-based filtering prevents
+  broadcasting of stale events to subscribers, with special handling for
+  ephemeral events
 
 ### Reliability
 
@@ -152,6 +155,18 @@ REDIS_URL=redis://localhost:6379
 # Examples:
 # REDIS_URL=redis://:password@localhost:6379
 # REDIS_URL=redis://localhost:6379/0
+```
+
+#### Event Filtering Configuration
+
+```bash
+# Maximum age of events to broadcast to subscribers (in seconds)
+# Events older than this will not be broadcast to subscribers
+# Ephemeral events (kind 20000-29999) are never stored, only broadcast
+# Ephemeral events that are too old will be rejected with a false OK message
+# Set to 0 to disable age filtering
+# Default: 300 (5 minutes)
+BROADCAST_MAX_AGE=300
 ```
 
 ### Running the Server
