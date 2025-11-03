@@ -236,78 +236,80 @@ async function queryEventsWithTags(
   tagFilters: Array<{ name: string; values: string[] }>,
   limit: number,
 ): Promise<NostrEvent[]> {
-  // Build conditions for the main query
-  const mainConditions: string[] = [];
+  // Build conditions for the main query following the optimized pattern
+  const conditions: string[] = [];
   const params: Record<string, unknown> = {};
+
+  // Handle id filters
+  if (filter.ids && filter.ids.length > 0) {
+    conditions.push(`e.id IN ({ids:Array(String)})`);
+    params.ids = filter.ids;
+  }
 
   // Handle author filters
   if (filter.authors && filter.authors.length > 0) {
-    mainConditions.push(`e.pubkey IN ({authors:Array(String)})`);
+    conditions.push(`e.pubkey IN ({authors:Array(String)})`);
     params.authors = filter.authors;
   }
 
   // Handle kind filters
   if (filter.kinds && filter.kinds.length > 0) {
-    mainConditions.push(`e.kind IN ({kinds:Array(UInt16)})`);
+    conditions.push(`e.kind IN ({kinds:Array(UInt16)})`);
     params.kinds = filter.kinds;
   }
 
   // Handle time filters
   if (filter.since) {
-    mainConditions.push(`e.created_at >= {since:UInt32}`);
+    conditions.push(`e.created_at >= {since:UInt32}`);
     params.since = filter.since;
   } else {
     // Default time filtering for tag queries if no explicit since is provided
-    mainConditions.push(`e.created_at >= toUnixTimestamp(now() - INTERVAL 30 DAY)`);
+    conditions.push(`e.created_at >= toUnixTimestamp(now() - INTERVAL 30 DAY)`);
   }
 
   if (filter.until) {
-    mainConditions.push(`e.created_at <= {until:UInt32}`);
+    conditions.push(`e.created_at <= {until:UInt32}`);
     params.until = filter.until;
   }
 
-  // Build tag conditions for subquery
-  const tagConditions: string[] = [];
-  
-  for (let i = 0; i < tagFilters.length; i++) {
-    const { name, values } = tagFilters[i];
-    const paramName = `tag_values_${i}`;
-    const tagNameParam = `tag_name_${i}`;
+  // Build tag conditions for subquery - optimized pattern
+  if (tagFilters.length > 0) {
+    const tagConditions: string[] = [];
+    
+    for (let i = 0; i < tagFilters.length; i++) {
+      const { name, values } = tagFilters[i];
+      const paramName = `tag_values_${i}`;
+      const tagNameParam = `tag_name_${i}`;
 
-    tagConditions.push(
-      `tag_name = {${tagNameParam}:String} AND tag_value_1 IN ({${paramName}:Array(String)})`,
-    );
-    params[paramName] = values;
-    params[tagNameParam] = name;
+      tagConditions.push(
+        `tag_name = {${tagNameParam}:String} AND tag_value_1 IN ({${paramName}:Array(String)})`,
+      );
+      params[paramName] = values;
+      params[tagNameParam] = name;
+    }
+
+    // Add time filtering to tag subquery for performance
+    const tagTimeCondition = filter.since 
+      ? `AND created_at >= {since:UInt32}`
+      : `AND created_at >= toUnixTimestamp(now() - INTERVAL 30 DAY)`;
+
+    // Add the tag subquery with proper time filtering
+    conditions.push(`e.id IN (
+      SELECT event_id
+      FROM event_tags_flat
+      WHERE ${tagConditions.join(" AND ")}
+        ${tagTimeCondition}
+    )`);
   }
 
   // Build the complete WHERE clause
-  let whereClause = "";
-  if (mainConditions.length > 0) {
-    whereClause = `WHERE ${mainConditions.join(" AND ")}`;
-  }
-
-  // Add tag subquery if there are tag filters
-  if (tagConditions.length > 0) {
-    const tagWhere = tagConditions.join(" AND ");
-    if (whereClause) {
-      whereClause += ` AND e.id IN (
-        SELECT event_id
-        FROM event_tags_flat
-        WHERE ${tagWhere}
-      )`;
-    } else {
-      whereClause = `WHERE e.id IN (
-        SELECT event_id
-        FROM event_tags_flat
-        WHERE ${tagWhere}
-      )`;
-    }
-  }
+  const whereClause = conditions.length > 0
+    ? `WHERE ${conditions.join(" AND ")}`
+    : "";
 
   params.limit = limit;
 
-  // Follow the optimized pattern exactly as specified
+  // Follow the exact optimized pattern as specified
   const query = `
     SELECT e.*
     FROM events_local AS e
