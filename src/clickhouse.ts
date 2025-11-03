@@ -35,7 +35,10 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
   /**
    * Query events from ClickHouse based on a single filter
    */
-  private async queryFilter(filter: NostrFilter): Promise<NostrEvent[]> {
+  private async queryFilter(
+    filter: NostrFilter,
+    signal?: AbortSignal,
+  ): Promise<NostrEvent[]> {
     // If limit is 0, skip the query (realtime-only subscription)
     if (filter.limit === 0) {
       return [];
@@ -67,11 +70,11 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
 
     // If we have tag filters, use the flattened tag view for better performance
     if (tagFilters.length > 0) {
-      return await this.queryEventsWithTags(filter, tagFilters, limit);
+      return await this.queryEventsWithTags(filter, tagFilters, limit, signal);
     }
 
     // For non-tag queries, use the main table
-    return await this.queryEventsSimple(nonTagFilter, limit);
+    return await this.queryEventsSimple(nonTagFilter, limit, signal);
   }
 
   /**
@@ -80,6 +83,7 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
   private async queryEventsSimple(
     filter: NostrFilter,
     limit: number,
+    signal?: AbortSignal,
   ): Promise<NostrEvent[]> {
     const conditions: string[] = [];
     const params: Record<string, unknown> = {};
@@ -134,6 +138,7 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
       query,
       query_params: params,
       format: "JSONEachRow",
+      abort_signal: signal,
     });
 
     const data = await resultSet.json<{
@@ -164,6 +169,7 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
     filter: NostrFilter,
     tagFilters: Array<{ name: string; values: string[] }>,
     limit: number,
+    signal?: AbortSignal,
   ): Promise<NostrEvent[]> {
     // Build conditions for tag filters using flattened table
     const tagConditions: string[] = [];
@@ -237,6 +243,7 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
       query,
       query_params: params,
       format: "JSONEachRow",
+      abort_signal: signal,
     });
 
     const data = await resultSet.json<{
@@ -266,7 +273,7 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
    */
   async event(
     event: NostrEvent,
-    _opts?: { signal?: AbortSignal },
+    opts?: { signal?: AbortSignal },
   ): Promise<void> {
     await this.clickhouse.insert({
       table: "events_local",
@@ -282,6 +289,7 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
         relay_source: this.relaySource,
       }],
       format: "JSONEachRow",
+      abort_signal: opts?.signal,
     });
   }
 
@@ -289,7 +297,10 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
    * Insert a batch of events into ClickHouse
    * Events are expected to be pre-validated
    */
-  async eventBatch(events: NostrEvent[]): Promise<void> {
+  async eventBatch(
+    events: NostrEvent[],
+    opts?: { signal?: AbortSignal },
+  ): Promise<void> {
     if (events.length === 0) return;
 
     await this.clickhouse.insert({
@@ -306,6 +317,7 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
         relay_source: this.relaySource,
       })),
       format: "JSONEachRow",
+      abort_signal: opts?.signal,
     });
   }
 
@@ -323,7 +335,7 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
         break;
       }
       try {
-        const events = await this.queryFilter(filter);
+        const events = await this.queryFilter(filter, opts?.signal);
         allEvents.push(...events);
       } catch (error) {
         console.error("Query failed for filter:", filter, error);
@@ -343,7 +355,7 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
     // Query all filters
     for (const filter of filters) {
       try {
-        const events = await this.queryFilter(filter);
+        const events = await this.queryFilter(filter, opts?.signal);
         for (const event of events) {
           if (opts?.signal?.aborted) {
             return;
@@ -371,7 +383,7 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
         break;
       }
       try {
-        const events = await this.queryFilter(filter);
+        const events = await this.queryFilter(filter, opts?.signal);
         total += events.length;
       } catch (error) {
         console.error("Count query failed for filter:", filter, error);
