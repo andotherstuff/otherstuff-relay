@@ -10,7 +10,11 @@ import { createClient } from "@clickhouse/client-web";
 import { createClient as createRedisClient } from "redis";
 import { Config } from "./config.ts";
 import { getMetricsInstance, initializeMetrics } from "./metrics.ts";
-import type { NostrEvent, NostrFilter } from "@nostrify/nostrify";
+import type {
+  NostrEvent,
+  NostrFilter,
+  NostrRelayMsg,
+} from "@nostrify/nostrify";
 
 const config = new Config(Deno.env);
 
@@ -91,8 +95,6 @@ type Subscription = {
   subId: string;
   filters: NostrFilter[];
 };
-
-const subscriptions = new Map<string, Subscription>();
 
 // Helper function to get the effective limit for a set of filters
 // Returns the maximum limit of all filters, or undefined if no limit
@@ -413,11 +415,6 @@ async function handleReq(
     filters = filters.slice(0, 10);
   }
 
-  const subKey = `${connId}:${subId}`;
-
-  // Store subscription
-  subscriptions.set(subKey, { connId, subId, filters });
-
   // Also store in Redis for subscription tracking across workers
   await redis.hSet(`nostr:subs:${connId}`, subId, JSON.stringify(filters));
 
@@ -515,8 +512,6 @@ async function handleReq(
 }
 
 async function handleClose(connId: string, subId: string): Promise<void> {
-  const key = `${connId}:${subId}`;
-  subscriptions.delete(key);
   await redis.hDel(`nostr:subs:${connId}`, subId);
 
   // Clean up tracking data for this subscription
@@ -530,18 +525,6 @@ async function handleClose(connId: string, subId: string): Promise<void> {
 }
 
 async function handleDisconnect(connId: string): Promise<void> {
-  // Remove all subscriptions for this connection
-  const toDelete: string[] = [];
-  for (const [key, sub] of subscriptions.entries()) {
-    if (sub.connId === connId) {
-      toDelete.push(key);
-    }
-  }
-
-  for (const key of toDelete) {
-    subscriptions.delete(key);
-  }
-
   // Remove from Redis
   await redis.del(`nostr:subs:${connId}`);
   await redis.del(`nostr:sub:counts:${connId}`);
@@ -668,8 +651,7 @@ function matchesFilter(event: NostrEvent, filter: NostrFilter): boolean {
   return true;
 }
 
-// deno-lint-ignore no-explicit-any
-async function sendResponse(connId: string, msg: any): Promise<void> {
+async function sendResponse(connId: string, msg: NostrRelayMsg): Promise<void> {
   const response = {
     connId,
     msg,
@@ -750,7 +732,6 @@ async function processMessages() {
 // Graceful shutdown
 const shutdown = async () => {
   console.log(`Shutting down relay worker ${WORKER_ID}...`);
-  subscriptions.clear();
   await redis.quit();
   await clickhouse.close();
   Deno.exit(0);
