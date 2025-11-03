@@ -148,10 +148,25 @@ app.get("/", (c) => {
   const { socket, response } = Deno.upgradeWebSocket(c.req.raw);
   const connId = crypto.randomUUID();
   let responsePoller: number | null = null;
+  let ttlRefresher: number | null = null;
 
-  socket.onopen = () => {
+  socket.onopen = async () => {
     metrics.incrementConnections();
     connectionsGauge.inc();
+
+    // Register this connection as active in Redis with a short TTL
+    // This allows relay workers to check if a connection is still alive
+    // The TTL is refreshed periodically below
+    await redis.set(`nostr:conn:${connId}`, "1", { EX: 30 });
+
+    // Refresh connection TTL every 10 seconds
+    ttlRefresher = setInterval(async () => {
+      try {
+        await redis.expire(`nostr:conn:${connId}`, 30);
+      } catch (err) {
+        console.error("Error refreshing connection TTL:", err);
+      }
+    }, 10000);
 
     // Start polling for responses from relay workers
     responsePoller = setInterval(async () => {
@@ -203,6 +218,19 @@ app.get("/", (c) => {
       clearInterval(responsePoller);
     }
 
+    // Stop TTL refresher
+    if (ttlRefresher !== null) {
+      clearInterval(ttlRefresher);
+    }
+
+    // Remove connection from active set FIRST
+    // This prevents relay workers from sending new messages to this connection
+    try {
+      await redis.del(`nostr:conn:${connId}`);
+    } catch (err) {
+      console.error("Error removing connection from active set:", err);
+    }
+
     // Send disconnect message to relay workers for cleanup
     try {
       await redis.lPush(
@@ -215,6 +243,9 @@ app.get("/", (c) => {
     } catch (err) {
       console.error("Error sending disconnect:", err);
     }
+
+    // Wait a brief moment for any in-flight messages to be processed
+    await new Promise((resolve) => setTimeout(resolve, 100));
 
     // Clean up response queue
     try {

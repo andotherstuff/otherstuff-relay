@@ -708,6 +708,14 @@ function matchesFilter(event: NostrEvent, filter: NostrFilter): boolean {
 
 // deno-lint-ignore no-explicit-any
 async function sendResponse(connId: string, msg: any): Promise<void> {
+  // Check if connection is still active before sending response
+  // This prevents writing to orphaned response queues
+  const isActive = await redis.exists(`nostr:conn:${connId}`);
+  if (!isActive) {
+    // Connection is gone, don't queue the response
+    return;
+  }
+
   const response = {
     connId,
     msg,
