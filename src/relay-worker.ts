@@ -641,6 +641,12 @@ async function sendResponse(connId: string, msg: NostrRelayMsg): Promise<void> {
   
   const responseKey = `nostr:responses:${connId}`;
   const metaKey = `nostr:conn:meta:${connId}`;
+  const blockKey = `nostr:block:${connId}`;
+  
+  // Quick check if connection is blocked (prevents race conditions)
+  if (await redis.exists(blockKey)) {
+    return; // Connection is temporarily blocked
+  }
   
   // Check connection health and backpressure before queueing
   const meta = await redis.hGetAll(metaKey);
@@ -656,8 +662,35 @@ async function sendResponse(connId: string, msg: NostrRelayMsg): Promise<void> {
     }
   }
   
-  // Check current queue size and apply backpressure
+  // Check current queue size and apply aggressive backpressure
   const queueSize = await redis.lLen(responseKey);
+  
+  // EMERGENCY: Block connections with massive queues
+  if (queueSize > 50000) {
+    console.error(`🚨 Response queue emergency for ${connId}: ${queueSize} messages, blocking connection`);
+    // Block this connection for 30 seconds to give the server time to catch up
+    await redis.setEx(blockKey, 30, "emergency_block");
+    return;
+  }
+  
+  // CRITICAL: Apply probabilistic backpressure
+  if (queueSize > 5000) {
+    console.warn(`⚠️  Response queue critical for ${connId}: ${queueSize} messages, applying emergency backpressure`);
+    // Only allow 1 in 100 messages through (1% chance)
+    if (Math.random() > 0.01) {
+      return;
+    }
+  } else if (queueSize > 1000) {
+    // High: only allow 1 in 10 messages through (10% chance)
+    if (Math.random() > 0.1) {
+      return;
+    }
+  } else if (queueSize > 500) {
+    // Medium: only allow 1 in 2 messages through (50% chance)
+    if (Math.random() > 0.5) {
+      return;
+    }
+  }
   
   // Progressive backpressure: stricter limits for larger queues
   let maxSize = 1000; // Default limit
@@ -669,7 +702,6 @@ async function sendResponse(connId: string, msg: NostrRelayMsg): Promise<void> {
     maxSize = 100; // Strict limit for large queues
   }
   if (queueSize > 2000) {
-    console.warn(`⚠️  Response queue critical for ${connId}: ${queueSize} messages, applying strict backpressure`);
     maxSize = 10; // Very strict limit
   }
   

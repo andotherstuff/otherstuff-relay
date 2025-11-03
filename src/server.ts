@@ -171,9 +171,23 @@ app.get("/", (c) => {
         // Check queue size to prevent endless buildup
         const queueSize = await redis.lLen(queueKey);
         
+// Log queue sizes for monitoring (but not too frequently)
+        if (queueSize > 1000 && queueSize % 1000 === 0) {
+          console.warn(`📊 Queue size for ${connId}: ${queueSize} messages, bufferedAmount: ${socket.bufferedAmount}`);
+        }
+        
+        // Emergency cleanup for massive queues
+        if (queueSize > 50000) {
+          console.error(`🚨 Response queue emergency for ${connId}: ${queueSize} messages, bufferedAmount: ${socket.bufferedAmount}, forcing immediate cleanup`);
+          await redis.del(queueKey);
+          await redis.hSet(`nostr:conn:meta:${connId}`, "emergency_cleanup", Date.now().toString());
+          socket.close(1013, "Server overloaded");
+          return;
+        }
+        
         // Force cleanup if queue gets too large (potential abuse or stuck client)
         if (queueSize > 10000) {
-          console.warn(`⚠️  Response queue too large for ${connId}: ${queueSize} messages, forcing cleanup`);
+          console.warn(`⚠️  Response queue too large for ${connId}: ${queueSize} messages, bufferedAmount: ${socket.bufferedAmount}, forcing cleanup`);
           await redis.del(queueKey);
           await redis.hSet(`nostr:conn:meta:${connId}`, "forced_cleanup", Date.now().toString());
           return;
@@ -184,6 +198,7 @@ app.get("/", (c) => {
         if (responses && responses.length > 0) {
           let sentCount = 0;
           let failedCount = 0;
+          const failedMessages = [];
           
           for (const responseJson of responses) {
             try {
@@ -192,13 +207,17 @@ app.get("/", (c) => {
                 sentCount++;
               } else {
                 failedCount++;
-                // Put failed messages back at the front of the queue for retry
-                await redis.lPush(queueKey, responseJson);
+                failedMessages.push(responseJson); // Store failed messages
               }
             } catch (err) {
               console.error("Error parsing response:", err);
               failedCount++;
             }
+          }
+          
+          // CRITICAL FIX: Put failed messages at the BACK of the queue, not front!
+          if (failedMessages.length > 0) {
+            await redis.rPush(queueKey, failedMessages);
           }
           
           // Only update activity and reset TTL if we actually sent messages
@@ -213,7 +232,7 @@ app.get("/", (c) => {
           }
           
           // If too many sends failed, the connection is likely stuck
-          if (failedCount > 10) {
+          if (failedCount > 50) { // Increased threshold since we're now properly queuing failed messages
             console.warn(`⚠️  Too many send failures for ${connId}: ${failedCount}/${responses.length}, closing connection`);
             socket.close(1013, "Try again later");
           }
@@ -259,6 +278,7 @@ app.get("/", (c) => {
         `nostr:sub:eose:${connId}`,
         queueKey,
         `nostr:conn:meta:${connId}`,
+        `nostr:block:${connId}`,
       ]);
     } catch (err) {
       console.error("Error cleaning up connection data:", err);
@@ -320,12 +340,29 @@ const cleanupOrphanedKeys = async () => {
         const connId = responseKey.replace("nostr:responses:", "");
         const subsKey = `nostr:subs:${connId}`;
         const metaKey = `nostr:conn:meta:${connId}`;
+        const blockKey = `nostr:block:${connId}`;
         
         // Check if connection is orphaned (no subscriptions exist)
         if (!(await redis.exists(subsKey))) {
-          await redis.del(responseKey);
-          await redis.del(metaKey);
+          await redis.del([responseKey, metaKey, blockKey]);
           cleaned++;
+          continue;
+        }
+
+        // Emergency cleanup for massive queues
+        const queueSize = await redis.lLen(responseKey);
+        if (queueSize > 100000) {
+          console.error(`🚨 EMERGENCY: Massive queue cleanup for ${connId}: ${queueSize} messages`);
+          await redis.del([
+            responseKey,
+            subsKey,
+            `nostr:sub:counts:${connId}`,
+            `nostr:sub:limits:${connId}`,
+            `nostr:sub:eose:${connId}`,
+            metaKey,
+            blockKey,
+          ]);
+          forcedCleaned++;
           continue;
         }
 
@@ -345,6 +382,7 @@ const cleanupOrphanedKeys = async () => {
               `nostr:sub:limits:${connId}`,
               `nostr:sub:eose:${connId}`,
               metaKey,
+              blockKey,
             ]);
             forcedCleaned++;
           }
