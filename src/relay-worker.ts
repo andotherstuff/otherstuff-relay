@@ -252,56 +252,70 @@ async function queryEventsWithTags(
     params[tagNameParam] = name;
   }
 
-  const tagWhereClause = tagConditions.join(" OR ");
+  const tagWhereClause = `(${tagConditions.join(" OR ")})`;
 
-  // Build additional conditions
-  const otherConditions: string[] = [];
+  // Build additional conditions for the main query
+  const mainConditions: string[] = [];
 
   if (filter.authors && filter.authors.length > 0) {
-    otherConditions.push(`pubkey IN ({authors:Array(String)})`);
+    mainConditions.push(`pubkey IN ({authors:Array(String)})`);
     params.authors = filter.authors;
   }
 
   if (filter.kinds && filter.kinds.length > 0) {
-    otherConditions.push(`kind IN ({kinds:Array(UInt16)})`);
+    mainConditions.push(`kind IN ({kinds:Array(UInt16)})`);
     params.kinds = filter.kinds;
   }
 
   if (filter.since) {
-    otherConditions.push(`created_at >= {since:DateTime}`);
-    params.since = new Date(filter.since * 1000);
+    mainConditions.push(`created_at >= {since:UInt32}`);
+    params.since = filter.since;
   }
 
   if (filter.until) {
-    otherConditions.push(`created_at <= {until:DateTime}`);
-    params.until = new Date(filter.until * 1000);
+    mainConditions.push(`created_at <= {until:UInt32}`);
+    params.until = filter.until;
   }
 
-  const allConditions = [tagWhereClause, ...otherConditions];
-  const whereClause = `WHERE ${allConditions.join(" AND ")}`;
+  // Build the WHERE clause for the subquery
+  const subqueryConditions = [tagWhereClause];
+  
+  // Add time-based filtering for tag queries if no explicit time range is provided
+  if (!filter.since && !filter.until) {
+    subqueryConditions.push(`created_at >= toUnixTimestamp(now() - INTERVAL 30 DAY)`);
+  }
 
-  params.limit = limit;
+  const subqueryWhereClause = `WHERE ${subqueryConditions.join(" AND ")}`;
 
-  // Query using the flattened tag view with JOIN to main table
+  // Build the WHERE clause for the main query
+  const mainWhereClause = mainConditions.length > 0
+    ? `WHERE ${mainConditions.join(" AND ")}`
+    : "";
+
+  params.inner_limit = Math.min(limit * 2, 2000); // Higher limit for subquery to ensure we have enough matches
+  params.outer_limit = limit;
+
+  // Follow the optimized pattern: SELECT e.* FROM events_local AS e WHERE e.id IN (subquery) ORDER BY e.created_at DESC LIMIT x
   const query = `
-    SELECT DISTINCT
+    SELECT
       e.id,
       e.pubkey,
-      toUnixTimestamp(e.created_at) as created_at,
+      e.created_at,
       e.kind,
       e.tags,
       e.content,
       e.sig
-    FROM events_local e
-    INNER JOIN (
-      SELECT DISTINCT event_id, created_at
+    FROM events_local AS e
+    WHERE e.id IN (
+      SELECT DISTINCT event_id
       FROM event_tags_flat
-      ${whereClause}
+      ${subqueryWhereClause}
       ORDER BY created_at DESC
-      LIMIT {limit:UInt32}
-    ) t ON e.id = t.event_id
+      LIMIT {inner_limit:UInt32}
+    )
+    ${mainWhereClause}
     ORDER BY e.created_at DESC
-    LIMIT {limit:UInt32}
+    LIMIT {outer_limit:UInt32}
   `;
 
   const resultSet = await clickhouse.query({
