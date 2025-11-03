@@ -22,7 +22,7 @@ export interface ClickhouseRelayOptions {
  * Handles event storage and querying without any Redis dependencies
  * Expects events to be pre-validated before insertion
  */
-export class ClickhouseRelay implements NRelay {
+export class ClickhouseRelay implements NRelay, AsyncDisposable {
   private relaySource: string;
 
   constructor(
@@ -396,6 +396,13 @@ export class ClickhouseRelay implements NRelay {
    */
   async close(): Promise<void> {
     await this.clickhouse.close();
+  }
+
+  /**
+   * Dispose resources
+   */
+  async [Symbol.asyncDispose](): Promise<void> {
+    await this.close();
   }
 
   /**
