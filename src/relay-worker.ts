@@ -203,11 +203,13 @@ async function queryEventsWithTags(
     const paramName = `tag_values_${i}`;
     const tagNameParam = `tag_name_${i}`;
 
+    // Fix parameter binding by using inline values
+    const escapedName = name.replace(/'/g, "\\'");
+    const escapedValues = values.map(v => `'${v.replace(/'/g, "\\'")}'`).join(', ');
+    
     tagConditions.push(
-      `tag_name = {${tagNameParam}:String} AND tag_value_1 IN ({${paramName}:Array(String)})`,
+      `tag_name = '${escapedName}' AND tag_value_1 IN (${escapedValues})`,
     );
-    params[paramName] = values;
-    params[tagNameParam] = name;
   }
 
   const tagWhereClause = tagConditions.join(" OR ");
@@ -241,6 +243,7 @@ async function queryEventsWithTags(
   params.limit = limit;
 
   // Query using the flattened tag view with JOIN to main table
+  // Fix: remove outer LIMIT to avoid double LIMIT issue
   const query = `
     SELECT DISTINCT
       e.id,
@@ -259,7 +262,6 @@ async function queryEventsWithTags(
       LIMIT {limit:UInt32}
     ) t ON e.id = t.event_id
     ORDER BY e.created_at DESC
-    LIMIT {limit:UInt32}
   `;
 
   const resultSet = await clickhouse.query({
