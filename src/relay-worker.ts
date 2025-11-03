@@ -40,6 +40,34 @@ const wasmInitialized = (async () => {
 const WORKER_ID = crypto.randomUUID().slice(0, 8);
 console.log(`🔧 Relay worker ${WORKER_ID} started, waiting for messages...`);
 
+// Lua script for atomic check-and-increment with limit
+// Returns: [should_send (0 or 1), new_count, limit_reached (0 or 1)]
+const CHECK_AND_INCREMENT_SCRIPT = `
+  local counts_key = KEYS[1]
+  local limits_key = KEYS[2]
+  local sub_id = ARGV[1]
+  
+  local count = tonumber(redis.call('HGET', counts_key, sub_id) or '0')
+  local limit = tonumber(redis.call('HGET', limits_key, sub_id) or '0')
+  
+  -- If no limit (0), always send
+  if limit == 0 then
+    local new_count = redis.call('HINCRBY', counts_key, sub_id, 1)
+    return {1, new_count, 0}
+  end
+  
+  -- If already at or over limit, don't send
+  if count >= limit then
+    return {0, count, 1}
+  end
+  
+  -- Increment and check if we just reached the limit
+  local new_count = redis.call('HINCRBY', counts_key, sub_id, 1)
+  local limit_reached = (new_count >= limit) and 1 or 0
+  
+  return {1, new_count, limit_reached}
+`;
+
 // Helper function to check if an event is ephemeral
 function isEphemeral(kind: number): boolean {
   return kind >= 20000 && kind < 30000;
@@ -431,20 +459,32 @@ async function handleReq(
 
       // Check if still needed before sending each event
       for (const event of events) {
-        const count = parseInt(
-          await redis.hGet(`nostr:sub:counts:${connId}`, subId) || "0",
-        );
-        const limit = effectiveLimit;
+        // Atomically check and increment (prevents race with broadcast events)
+        const result = await redis.eval(
+          CHECK_AND_INCREMENT_SCRIPT,
+          {
+            keys: [
+              `nostr:sub:counts:${connId}`,
+              `nostr:sub:limits:${connId}`,
+            ],
+            arguments: [subId],
+          },
+        ) as number[];
+
+        const shouldSend = result[0] === 1;
+        const limitReached = result[2] === 1;
 
         // If limit reached, stop sending database events
-        if (limit !== undefined && count >= limit) {
+        if (!shouldSend) {
           break;
         }
 
         await sendResponse(connId, ["EVENT", subId, event]);
 
-        // Increment count after sending
-        await redis.hIncrBy(`nostr:sub:counts:${connId}`, subId, 1);
+        // If we just reached the limit, we can stop
+        if (limitReached) {
+          break;
+        }
       }
       return events.length;
     } catch (error) {
@@ -546,35 +586,38 @@ async function broadcastEvent(event: NostrEvent): Promise<void> {
 
         // Check if event matches any filter
         if (filters.some((filter) => matchesFilter(event, filter))) {
-          // Get limit for this subscription
-          const limitStr = await redis.hGet(
-            `nostr:sub:limits:${connId}`,
-            subId,
-          );
-          const limit = limitStr ? parseInt(limitStr) : undefined;
+          // Atomically check count and increment (prevents race condition)
+          const result = await redis.eval(
+            CHECK_AND_INCREMENT_SCRIPT,
+            {
+              keys: [
+                `nostr:sub:counts:${connId}`,
+                `nostr:sub:limits:${connId}`,
+              ],
+              arguments: [subId],
+            },
+          ) as number[];
 
-          // Send the event
-          await sendResponse(connId, ["EVENT", subId, event]);
+          const shouldSend = result[0] === 1;
+          const limitReached = result[2] === 1;
 
-          // Increment the count
-          const newCount = await redis.hIncrBy(
-            `nostr:sub:counts:${connId}`,
-            subId,
-            1,
-          );
+          // Only send if we're under the limit
+          if (shouldSend) {
+            await sendResponse(connId, ["EVENT", subId, event]);
 
-          // Check if we just reached the limit
-          if (limit !== undefined && newCount >= limit) {
-            // Check if EOSE was already sent
-            const eoseSent = await redis.hGet(
-              `nostr:sub:eose:${connId}`,
-              subId,
-            );
+            // If we just reached the limit, send EOSE
+            if (limitReached) {
+              // Check if EOSE was already sent
+              const eoseSent = await redis.hGet(
+                `nostr:sub:eose:${connId}`,
+                subId,
+              );
 
-            if (!eoseSent) {
-              // Send EOSE immediately - subscription is fulfilled
-              await sendResponse(connId, ["EOSE", subId]);
-              await redis.hSet(`nostr:sub:eose:${connId}`, subId, "1");
+              if (!eoseSent) {
+                // Send EOSE immediately - subscription is fulfilled
+                await sendResponse(connId, ["EOSE", subId]);
+                await redis.hSet(`nostr:sub:eose:${connId}`, subId, "1");
+              }
             }
           }
         }
