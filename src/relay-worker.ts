@@ -236,7 +236,7 @@ async function queryEventsWithTags(
   tagFilters: Array<{ name: string; values: string[] }>,
   limit: number,
 ): Promise<NostrEvent[]> {
-  // Build conditions for the main query following the optimized pattern
+  // Build conditions exactly following your specified pattern
   const conditions: string[] = [];
   const params: Record<string, unknown> = {};
 
@@ -258,7 +258,7 @@ async function queryEventsWithTags(
     params.kinds = filter.kinds;
   }
 
-  // Handle time filters
+  // Handle time filters - only in main query, not duplicated in subquery
   if (filter.since) {
     conditions.push(`e.created_at >= {since:UInt32}`);
     params.since = filter.since;
@@ -272,7 +272,7 @@ async function queryEventsWithTags(
     params.until = filter.until;
   }
 
-  // Build tag conditions for subquery - optimized pattern
+  // Build tag subquery exactly as in your pattern - no time filtering here
   if (tagFilters.length > 0) {
     const tagConditions: string[] = [];
     
@@ -288,17 +288,11 @@ async function queryEventsWithTags(
       params[tagNameParam] = name;
     }
 
-    // Add time filtering to tag subquery for performance
-    const tagTimeCondition = filter.since 
-      ? `AND created_at >= {since:UInt32}`
-      : `AND created_at >= toUnixTimestamp(now() - INTERVAL 30 DAY)`;
-
-    // Add the tag subquery with proper time filtering
+    // Add the tag subquery exactly as in your pattern
     conditions.push(`e.id IN (
       SELECT event_id
       FROM event_tags_flat
       WHERE ${tagConditions.join(" AND ")}
-        ${tagTimeCondition}
     )`);
   }
 
@@ -317,6 +311,11 @@ async function queryEventsWithTags(
     ORDER BY e.created_at DESC
     LIMIT {limit:UInt32}
   `;
+
+  // Debug: Log the actual query for comparison
+  console.log(`🔍 Tag Query Generated:
+${query}
+Params: ${JSON.stringify(params, null, 2)}`);
 
   const resultSet = await clickhouse.query({
     query,
