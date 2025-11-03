@@ -525,11 +525,8 @@ function matchesFilter(event: NostrEvent, filter: NostrFilter): boolean {
 
 // deno-lint-ignore no-explicit-any
 async function sendResponse(connId: string, msg: any): Promise<void> {
-  const response = {
-    connId,
-    msg,
-  };
-  await redis.rPush(`nostr:responses:${connId}`, JSON.stringify(response));
+  if (!(await redis.exists(`nostr:subs:${connId}`))) return;
+  await redis.rPush(`nostr:responses:${connId}`, JSON.stringify({ connId, msg }));
 }
 
 // Main processing loop
