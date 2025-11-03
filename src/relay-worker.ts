@@ -478,12 +478,35 @@ async function handleEvent(
     return;
   }
 
+  // Check if event is ephemeral (kind 20000 <= k < 30000)
+  const isEphemeral = event.kind >= 20000 && event.kind < 30000;
+
+  // Check if event is too old to broadcast
+  const now = Math.floor(Date.now() / 1000);
+  const eventAge = now - event.created_at;
+  const isTooOld = eventAge > config.broadcastMaxAge;
+
+  // Ephemeral events that are too old should be rejected
+  if (isEphemeral && isTooOld) {
+    await metrics.incrementEventsRejected();
+    await sendResponse(connId, [
+      "OK",
+      event.id,
+      false,
+      `rejected: ephemeral event too old (${eventAge}s old, max: ${config.broadcastMaxAge}s)`,
+    ]);
+    return;
+  }
+
   try {
-    // Push event to storage queue for batch processing by storage worker
-    await redis.lPush("nostr:events:queue", JSON.stringify(event));
+    // Only store non-ephemeral events in the database
+    if (!isEphemeral) {
+      await redis.lPush("nostr:events:queue", JSON.stringify(event));
+    }
+
     await sendResponse(connId, ["OK", event.id, true, ""]);
 
-    // Broadcast to subscribers
+    // Broadcast to subscribers (will be skipped if too old)
     await broadcastEvent(event);
   } catch (error) {
     console.error("Failed to queue event:", error);
@@ -603,6 +626,15 @@ async function countTotalSubscriptions(): Promise<number> {
 }
 
 async function broadcastEvent(event: NostrEvent): Promise<void> {
+  // Skip broadcasting events that are too old (not relevant for realtime subscriptions)
+  const now = Math.floor(Date.now() / 1000);
+  const eventAge = now - event.created_at;
+
+  if (eventAge > config.broadcastMaxAge) {
+    // Event is too old, don't broadcast to realtime subscriptions
+    return;
+  }
+
   // Use reverse indexes from Redis to find candidate subscriptions across ALL workers
   const candidateKeys = await findCandidateSubscriptions(event);
 

@@ -6,11 +6,15 @@ export class Config {
   public readonly databaseUrl: string;
   public readonly redisUrl: string;
   public readonly relaySource: string;
+  public readonly broadcastMaxAge: number;
 
   constructor(env: { get(key: string): string | undefined }) {
     this.port = parseInt(env.get("PORT") || "8000");
     this.databaseUrl = env.get("DATABASE_URL") || "http://localhost:8123/nostr";
     this.redisUrl = env.get("REDIS_URL") || "redis://localhost:6379";
     this.relaySource = env.get("RELAY_SOURCE") || "";
+    // Maximum age (in seconds) for events to be broadcast to realtime subscriptions
+    // Default: 300 seconds (5 minutes) - events older than this won't be broadcast
+    this.broadcastMaxAge = parseInt(env.get("BROADCAST_MAX_AGE") || "300");
   }
 }
