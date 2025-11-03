@@ -154,26 +154,68 @@ app.get("/", (c) => {
     metrics.incrementConnections();
     connectionsGauge.inc();
 
+    // Track connection start time for age-based cleanup
+    const connectionStartTime = Date.now();
+    await redis.hSet(`nostr:conn:meta:${connId}`, {
+      start_time: connectionStartTime.toString(),
+      last_activity: connectionStartTime.toString(),
+    });
+
     // Set initial TTL on response queue as safety net for orphaned queues
-    // This will be reset whenever we successfully consume messages
-    await redis.expire(queueKey, 60);
+    await redis.expire(queueKey, 300); // 5 minutes TTL
+    await redis.expire(`nostr:conn:meta:${connId}`, 3600); // 1 hour for metadata
 
     // Start polling for responses from relay workers
     responsePoller = setInterval(async () => {
       try {
+        // Check queue size to prevent endless buildup
+        const queueSize = await redis.lLen(queueKey);
+        
+        // Force cleanup if queue gets too large (potential abuse or stuck client)
+        if (queueSize > 10000) {
+          console.warn(`⚠️  Response queue too large for ${connId}: ${queueSize} messages, forcing cleanup`);
+          await redis.del(queueKey);
+          await redis.hSet(`nostr:conn:meta:${connId}`, "forced_cleanup", Date.now().toString());
+          return;
+        }
+
         // Non-blocking pop of responses
         const responses = await redis.lPopCount(queueKey, 100);
         if (responses && responses.length > 0) {
-          // Reset TTL since we're actively consuming - this is a live connection
-          await redis.expire(queueKey, 60);
-
+          let sentCount = 0;
+          let failedCount = 0;
+          
           for (const responseJson of responses) {
             try {
               const { msg } = JSON.parse(responseJson);
-              send(msg);
+              if (send(msg)) {
+                sentCount++;
+              } else {
+                failedCount++;
+                // Put failed messages back at the front of the queue for retry
+                await redis.lPush(queueKey, responseJson);
+              }
             } catch (err) {
               console.error("Error parsing response:", err);
+              failedCount++;
             }
+          }
+          
+          // Only update activity and reset TTL if we actually sent messages
+          if (sentCount > 0) {
+            await redis.hSet(`nostr:conn:meta:${connId}`, "last_activity", Date.now().toString());
+            
+            // Only reset TTL if connection is not too old and sending successfully
+            const connectionAge = Date.now() - connectionStartTime;
+            if (connectionAge < 1800000) { // 30 minutes max connection age
+              await redis.expire(queueKey, 300); // Reset to 5 minutes
+            }
+          }
+          
+          // If too many sends failed, the connection is likely stuck
+          if (failedCount > 10) {
+            console.warn(`⚠️  Too many send failures for ${connId}: ${failedCount}/${responses.length}, closing connection`);
+            socket.close(1013, "Try again later");
           }
         }
       } catch (err) {
@@ -216,6 +258,7 @@ app.get("/", (c) => {
         `nostr:sub:limits:${connId}`,
         `nostr:sub:eose:${connId}`,
         queueKey,
+        `nostr:conn:meta:${connId}`,
       ]);
     } catch (err) {
       console.error("Error cleaning up connection data:", err);
@@ -228,20 +271,97 @@ app.get("/", (c) => {
     }
   };
 
-  function send(msg: NostrRelayMsg) {
+  let sendFailures = 0;
+  
+  function send(msg: NostrRelayMsg): boolean {
     try {
       if (socket.readyState === WebSocket.OPEN) {
+        // Check buffered amount to prevent backing up
+        if (socket.bufferedAmount > 1024 * 1024) { // 1MB buffer limit
+          console.warn(`⚠️  WebSocket buffer full for ${connId}: ${socket.bufferedAmount} bytes`);
+          sendFailures++;
+          return false;
+        }
+        
         socket.send(JSON.stringify(msg));
+        sendFailures = 0; // Reset on successful send
+        return true;
       }
+      return false;
     } catch (err) {
-      if (Deno.env.get("DEBUG")) {
-        console.error("Error sending message:", err);
-      }
+      sendFailures++;
+      console.error(`Error sending message to ${connId}:`, err);
+      return false;
     }
   }
 
   return response;
 });
+
+// Periodic cleanup of orphaned response keys and stuck connections
+const cleanupOrphanedKeys = async () => {
+  try {
+    let cleaned = 0;
+    let forcedCleaned = 0;
+    let cursor = "0";
+    
+    // Use SCAN for production safety (doesn't block the server)
+    do {
+      const result = await redis.scan(cursor, {
+        MATCH: "nostr:responses:*",
+        COUNT: 100,
+      });
+      
+      cursor = result.cursor;
+      const responseKeys = result.keys;
+
+      // Check each response key for various cleanup conditions
+      for (const responseKey of responseKeys) {
+        const connId = responseKey.replace("nostr:responses:", "");
+        const subsKey = `nostr:subs:${connId}`;
+        const metaKey = `nostr:conn:meta:${connId}`;
+        
+        // Check if connection is orphaned (no subscriptions exist)
+        if (!(await redis.exists(subsKey))) {
+          await redis.del(responseKey);
+          await redis.del(metaKey);
+          cleaned++;
+          continue;
+        }
+
+        // Check for stuck connections (old and inactive)
+        const meta = await redis.hGetAll(metaKey);
+        if (meta && meta.start_time && meta.last_activity) {
+          const connectionAge = Date.now() - parseInt(meta.start_time);
+          const inactivityTime = Date.now() - parseInt(meta.last_activity);
+          
+          // Force cleanup for very old connections (> 1 hour) or inactive (> 30 minutes)
+          if (connectionAge > 3600000 || inactivityTime > 1800000) {
+            console.warn(`⚠️  Force cleaning stuck connection ${connId}: age=${Math.round(connectionAge/1000)}s, inactive=${Math.round(inactivityTime/1000)}s`);
+            await redis.del([
+              responseKey,
+              subsKey,
+              `nostr:sub:counts:${connId}`,
+              `nostr:sub:limits:${connId}`,
+              `nostr:sub:eose:${connId}`,
+              metaKey,
+            ]);
+            forcedCleaned++;
+          }
+        }
+      }
+    } while (cursor !== "0");
+
+    if (cleaned > 0 || forcedCleaned > 0) {
+      console.log(`🧹 Cleaned up ${cleaned} orphaned and ${forcedCleaned} stuck response keys`);
+    }
+  } catch (error) {
+    console.error("Error during orphaned key cleanup:", error);
+  }
+};
+
+// Run cleanup every 2 minutes
+setInterval(cleanupOrphanedKeys, 120000);
 
 console.log(`🔧 Initializing Nostr relay...`);
 console.log(

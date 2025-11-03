@@ -638,7 +638,53 @@ function matchesFilter(event: NostrEvent, filter: NostrFilter): boolean {
 
 async function sendResponse(connId: string, msg: NostrRelayMsg): Promise<void> {
   if (!(await redis.exists(`nostr:subs:${connId}`))) return;
-  await redis.rPush(`nostr:responses:${connId}`, JSON.stringify({ connId, msg }));
+  
+  const responseKey = `nostr:responses:${connId}`;
+  const metaKey = `nostr:conn:meta:${connId}`;
+  
+  // Check connection health and backpressure before queueing
+  const meta = await redis.hGetAll(metaKey);
+  if (meta && meta.start_time && meta.last_activity) {
+    const connectionAge = Date.now() - parseInt(meta.start_time);
+    const lastActivity = parseInt(meta.last_activity);
+    const inactivityTime = Date.now() - lastActivity;
+    
+    // Don't queue to very old connections (> 30 minutes) or inactive connections (> 5 minutes)
+    if (connectionAge > 1800000 || inactivityTime > 300000) {
+      console.warn(`⚠️  Skipping response to stale connection ${connId}: age=${Math.round(connectionAge/1000)}s, inactive=${Math.round(inactivityTime/1000)}s`);
+      return;
+    }
+  }
+  
+  // Check current queue size and apply backpressure
+  const queueSize = await redis.lLen(responseKey);
+  
+  // Progressive backpressure: stricter limits for larger queues
+  let maxSize = 1000; // Default limit
+  
+  if (queueSize > 500) {
+    maxSize = 500; // Reduce limit when queue is growing
+  }
+  if (queueSize > 1000) {
+    maxSize = 100; // Strict limit for large queues
+  }
+  if (queueSize > 2000) {
+    console.warn(`⚠️  Response queue critical for ${connId}: ${queueSize} messages, applying strict backpressure`);
+    maxSize = 10; // Very strict limit
+  }
+  
+  if (queueSize >= maxSize) {
+    return; // Silently drop to prevent queue explosion
+  }
+  
+  // Set TTL if this is a new response queue (prevent orphaned keys)
+  const exists = await redis.exists(responseKey);
+  await redis.rPush(responseKey, JSON.stringify({ connId, msg }));
+  
+  // Only set TTL if the key didn't exist before (new connection)
+  if (!exists) {
+    await redis.expire(responseKey, 300); // 5 minutes TTL
+  }
 }
 
 // Main processing loop
