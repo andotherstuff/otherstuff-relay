@@ -67,8 +67,6 @@ This architecture solves the validation bottleneck by:
 
 ### Performance
 
-- **Reverse Index Optimization**: Distributed reverse indexing in Redis for fast
-  subscription matching (~200x faster than naive approach)
 - **Intelligent Rate Limiting**: Per-connection limits prevent abuse while
   maintaining throughput
 - **Query Optimization**: Automatic timeouts, size limits, and result caps
@@ -77,15 +75,6 @@ This architecture solves the validation bottleneck by:
   overhead
 - **Direct Database Access**: Efficient direct queries to ClickHouse for optimal
   performance
-
-### NIP Compliance
-
-- **NIP-01**: Full support for basic protocol, event validation, and ephemeral
-  events (20000 <= k < 30000)
-- **NIP-20**: Command results (OK messages) with detailed rejection reasons
-- **Ephemeral Events**: Not stored in database, rejected if too old to broadcast
-- **Age-Based Broadcasting**: Configurable threshold prevents stale events from
-  flooding realtime subscriptions
 
 ### Reliability
 
@@ -163,19 +152,6 @@ REDIS_URL=redis://localhost:6379
 # Examples:
 # REDIS_URL=redis://:password@localhost:6379
 # REDIS_URL=redis://localhost:6379/0
-```
-
-#### Broadcast Configuration
-
-```bash
-# Maximum age (in seconds) for events to broadcast to realtime subscriptions
-# Events older than this won't be sent to active subscriptions (but are still stored)
-# Default: 300 (5 minutes)
-BROADCAST_MAX_AGE=300
-
-# Examples:
-# BROADCAST_MAX_AGE=60    # Only broadcast events from the last minute
-# BROADCAST_MAX_AGE=3600  # Only broadcast events from the last hour
 ```
 
 ### Running the Server
