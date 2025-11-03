@@ -27,10 +27,8 @@ initializeMetrics(redis);
 // Get metrics instance for use in this module
 const metrics = getMetricsInstance();
 
-// Initialize ClickhouseRelay (no validation needed for storage)
-const relay = new ClickhouseRelay(clickhouse, {
-  relaySource: config.relaySource,
-});
+// Initialize ClickhouseRelay
+const relay = new ClickhouseRelay(clickhouse);
 
 const WORKER_ID = crypto.randomUUID().slice(0, 8);
 console.log(`🔧 Storage worker ${WORKER_ID} started, waiting for events...`);

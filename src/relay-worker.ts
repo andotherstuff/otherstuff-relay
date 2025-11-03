@@ -42,10 +42,8 @@ const wasmInitialized = (async () => {
   setNostrWasm(wasm);
 })();
 
-// Initialize ClickhouseRelay (events are pre-validated before insertion)
-const relay = new ClickhouseRelay(clickhouse, {
-  relaySource: config.relaySource,
-});
+// Initialize ClickhouseRelay
+const relay = new ClickhouseRelay(clickhouse);
 
 const WORKER_ID = crypto.randomUUID().slice(0, 8);
 console.log(`🔧 Relay worker ${WORKER_ID} started, waiting for messages...`);

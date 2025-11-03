@@ -1,8 +1,23 @@
 /**
  * Process manager to run server and workers together
  */
+import { createClient } from "@clickhouse/client-web";
+import { Config } from "./config.ts";
+import { ClickhouseRelay } from "./clickhouse.ts";
 
 const processes: Deno.ChildProcess[] = [];
+
+// Instantiate config with Deno.env
+const config = new Config(Deno.env);
+
+// Now connect to the specific database
+const clickhouse = createClient({
+  url: config.databaseUrl,
+});
+
+// Initialize ClickhouseRelay
+const relay = new ClickhouseRelay(clickhouse);
+await relay.migrate();
 
 // Number of worker processes to run
 const NUM_STORAGE_WORKERS = parseInt(
