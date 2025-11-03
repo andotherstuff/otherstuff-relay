@@ -637,15 +637,8 @@ function matchesFilter(event: NostrEvent, filter: NostrFilter): boolean {
 }
 
 async function sendResponse(connId: string, msg: NostrRelayMsg): Promise<void> {
-  const response = {
-    connId,
-    msg,
-  };
-  const queueKey = `nostr:responses:${connId}`;
-
-  // Just push the response - don't set TTL on every push
-  // The server's onclose handler will clean up the queue
-  await redis.rPush(queueKey, JSON.stringify(response));
+  if (!(await redis.exists(`nostr:subs:${connId}`))) return;
+  await redis.rPush(`nostr:responses:${connId}`, JSON.stringify({ connId, msg }));
 }
 
 // Main processing loop
