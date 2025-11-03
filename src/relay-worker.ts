@@ -3,6 +3,7 @@
  * Handles validation, database operations, and sends responses back via Redis
  */
 import { NSchema as n } from "@nostrify/nostrify";
+import { getFilterLimit } from "nostr-tools";
 import { setNostrWasm, verifyEvent } from "nostr-tools/wasm";
 import { initNostrWasm } from "nostr-wasm";
 import { createClient } from "@clickhouse/client-web";
@@ -64,6 +65,17 @@ type Subscription = {
 };
 
 const subscriptions = new Map<string, Subscription>();
+
+// Helper function to get the effective limit for a set of filters
+// Returns the maximum limit of all filters, or undefined if no limit
+function getEffectiveLimit(filters: NostrFilter[]): number | undefined {
+  const limit = filters.reduce(
+    (result, filter) => result + getFilterLimit(filter),
+    0,
+  );
+
+  return limit === Infinity ? undefined : limit;
+}
 
 async function verifyNostrEvent(event: NostrEvent): Promise<boolean> {
   await wasmInitialized;
@@ -373,23 +385,66 @@ async function handleReq(
     filters = filters.slice(0, 10);
   }
 
+  const subKey = `${connId}:${subId}`;
+
   // Store subscription
-  const key = `${connId}:${subId}`;
-  subscriptions.set(key, { connId, subId, filters });
+  subscriptions.set(subKey, { connId, subId, filters });
 
   // Also store in Redis for subscription tracking across workers
   await redis.hSet(`nostr:subs:${connId}`, subId, JSON.stringify(filters));
+
+  // Initialize event count for this subscription
+  const effectiveLimit = getEffectiveLimit(filters);
+  await redis.hSet(`nostr:sub:counts:${connId}`, subId, "0");
+
+  // Store the limit for this subscription if it exists
+  if (effectiveLimit !== undefined) {
+    await redis.hSet(
+      `nostr:sub:limits:${connId}`,
+      subId,
+      effectiveLimit.toString(),
+    );
+  }
 
   // Update subscription count
   const totalSubs = await countTotalSubscriptions();
   await metrics.setSubscriptions(totalSubs);
 
+  // Check if subscription was already fulfilled by realtime events
+  // This can happen in the race condition where events come in before DB query
+  const currentCount = parseInt(
+    await redis.hGet(`nostr:sub:counts:${connId}`, subId) || "0",
+  );
+  const alreadyFulfilled = effectiveLimit !== undefined &&
+    currentCount >= effectiveLimit;
+
+  if (alreadyFulfilled) {
+    // Subscription already fulfilled by realtime events, send EOSE immediately
+    await sendResponse(connId, ["EOSE", subId]);
+    return;
+  }
+
   // Query historical events for each filter
   const queryPromises = filters.map(async (filter) => {
     try {
       const events = await queryEvents(filter);
+
+      // Check if still needed before sending each event
       for (const event of events) {
+        const count = parseInt(
+          await redis.hGet(`nostr:sub:counts:${connId}`, subId) || "0",
+        );
+        const limit = effectiveLimit;
+
+        // If limit reached, stop sending database events
+        if (limit !== undefined && count >= limit) {
+          break;
+        }
+
         await sendResponse(connId, ["EVENT", subId, event]);
+
+        // Increment count after sending
+        await redis.hIncrBy(`nostr:sub:counts:${connId}`, subId, 1);
       }
       return events.length;
     } catch (error) {
@@ -409,14 +464,25 @@ async function handleReq(
     console.error("Query timeout or error:", error);
   }
 
-  // Send EOSE
-  await sendResponse(connId, ["EOSE", subId]);
+  // Check if EOSE was already sent by realtime events reaching the limit
+  const eoseSent = await redis.hGet(`nostr:sub:eose:${connId}`, subId);
+
+  if (!eoseSent) {
+    // Send EOSE only if it wasn't already sent
+    await sendResponse(connId, ["EOSE", subId]);
+    await redis.hSet(`nostr:sub:eose:${connId}`, subId, "1");
+  }
 }
 
 async function handleClose(connId: string, subId: string): Promise<void> {
   const key = `${connId}:${subId}`;
   subscriptions.delete(key);
   await redis.hDel(`nostr:subs:${connId}`, subId);
+
+  // Clean up tracking data for this subscription
+  await redis.hDel(`nostr:sub:counts:${connId}`, subId);
+  await redis.hDel(`nostr:sub:limits:${connId}`, subId);
+  await redis.hDel(`nostr:sub:eose:${connId}`, subId);
 
   // Update subscription count
   const totalSubs = await countTotalSubscriptions();
@@ -438,6 +504,9 @@ async function handleDisconnect(connId: string): Promise<void> {
 
   // Remove from Redis
   await redis.del(`nostr:subs:${connId}`);
+  await redis.del(`nostr:sub:counts:${connId}`);
+  await redis.del(`nostr:sub:limits:${connId}`);
+  await redis.del(`nostr:sub:eose:${connId}`);
 
   // Update subscription count
   const totalSubs = await countTotalSubscriptions();
@@ -477,7 +546,37 @@ async function broadcastEvent(event: NostrEvent): Promise<void> {
 
         // Check if event matches any filter
         if (filters.some((filter) => matchesFilter(event, filter))) {
+          // Get limit for this subscription
+          const limitStr = await redis.hGet(
+            `nostr:sub:limits:${connId}`,
+            subId,
+          );
+          const limit = limitStr ? parseInt(limitStr) : undefined;
+
+          // Send the event
           await sendResponse(connId, ["EVENT", subId, event]);
+
+          // Increment the count
+          const newCount = await redis.hIncrBy(
+            `nostr:sub:counts:${connId}`,
+            subId,
+            1,
+          );
+
+          // Check if we just reached the limit
+          if (limit !== undefined && newCount >= limit) {
+            // Check if EOSE was already sent
+            const eoseSent = await redis.hGet(
+              `nostr:sub:eose:${connId}`,
+              subId,
+            );
+
+            if (!eoseSent) {
+              // Send EOSE immediately - subscription is fulfilled
+              await sendResponse(connId, ["EOSE", subId]);
+              await redis.hSet(`nostr:sub:eose:${connId}`, subId, "1");
+            }
+          }
         }
       } catch (error) {
         console.error("Error broadcasting to subscription:", error);
