@@ -236,10 +236,39 @@ async function queryEventsWithTags(
   tagFilters: Array<{ name: string; values: string[] }>,
   limit: number,
 ): Promise<NostrEvent[]> {
-  // Build conditions for tag filters using flattened table
-  const tagConditions: string[] = [];
+  // Build conditions for the main query
+  const mainConditions: string[] = [];
   const params: Record<string, unknown> = {};
 
+  // Handle author filters
+  if (filter.authors && filter.authors.length > 0) {
+    mainConditions.push(`e.pubkey IN ({authors:Array(String)})`);
+    params.authors = filter.authors;
+  }
+
+  // Handle kind filters
+  if (filter.kinds && filter.kinds.length > 0) {
+    mainConditions.push(`e.kind IN ({kinds:Array(UInt16)})`);
+    params.kinds = filter.kinds;
+  }
+
+  // Handle time filters
+  if (filter.since) {
+    mainConditions.push(`e.created_at >= {since:UInt32}`);
+    params.since = filter.since;
+  } else {
+    // Default time filtering for tag queries if no explicit since is provided
+    mainConditions.push(`e.created_at >= toUnixTimestamp(now() - INTERVAL 30 DAY)`);
+  }
+
+  if (filter.until) {
+    mainConditions.push(`e.created_at <= {until:UInt32}`);
+    params.until = filter.until;
+  }
+
+  // Build tag conditions for subquery
+  const tagConditions: string[] = [];
+  
   for (let i = 0; i < tagFilters.length; i++) {
     const { name, values } = tagFilters[i];
     const paramName = `tag_values_${i}`;
@@ -252,70 +281,39 @@ async function queryEventsWithTags(
     params[tagNameParam] = name;
   }
 
-  const tagWhereClause = `(${tagConditions.join(" OR ")})`;
-
-  // Build additional conditions for the main query
-  const mainConditions: string[] = [];
-
-  if (filter.authors && filter.authors.length > 0) {
-    mainConditions.push(`pubkey IN ({authors:Array(String)})`);
-    params.authors = filter.authors;
+  // Build the complete WHERE clause
+  let whereClause = "";
+  if (mainConditions.length > 0) {
+    whereClause = `WHERE ${mainConditions.join(" AND ")}`;
   }
 
-  if (filter.kinds && filter.kinds.length > 0) {
-    mainConditions.push(`kind IN ({kinds:Array(UInt16)})`);
-    params.kinds = filter.kinds;
+  // Add tag subquery if there are tag filters
+  if (tagConditions.length > 0) {
+    const tagWhere = tagConditions.join(" AND ");
+    if (whereClause) {
+      whereClause += ` AND e.id IN (
+        SELECT event_id
+        FROM event_tags_flat
+        WHERE ${tagWhere}
+      )`;
+    } else {
+      whereClause = `WHERE e.id IN (
+        SELECT event_id
+        FROM event_tags_flat
+        WHERE ${tagWhere}
+      )`;
+    }
   }
 
-  if (filter.since) {
-    mainConditions.push(`created_at >= {since:UInt32}`);
-    params.since = filter.since;
-  }
+  params.limit = limit;
 
-  if (filter.until) {
-    mainConditions.push(`created_at <= {until:UInt32}`);
-    params.until = filter.until;
-  }
-
-  // Build the WHERE clause for the subquery
-  const subqueryConditions = [tagWhereClause];
-  
-  // Add time-based filtering for tag queries if no explicit time range is provided
-  if (!filter.since && !filter.until) {
-    subqueryConditions.push(`created_at >= toUnixTimestamp(now() - INTERVAL 30 DAY)`);
-  }
-
-  const subqueryWhereClause = `WHERE ${subqueryConditions.join(" AND ")}`;
-
-  // Build the WHERE clause for the main query
-  const mainWhereClause = mainConditions.length > 0
-    ? `WHERE ${mainConditions.join(" AND ")}`
-    : "";
-
-  params.inner_limit = Math.min(limit * 2, 2000); // Higher limit for subquery to ensure we have enough matches
-  params.outer_limit = limit;
-
-  // Follow the optimized pattern: SELECT e.* FROM events_local AS e WHERE e.id IN (subquery) ORDER BY e.created_at DESC LIMIT x
+  // Follow the optimized pattern exactly as specified
   const query = `
-    SELECT
-      e.id,
-      e.pubkey,
-      e.created_at,
-      e.kind,
-      e.tags,
-      e.content,
-      e.sig
+    SELECT e.*
     FROM events_local AS e
-    WHERE e.id IN (
-      SELECT DISTINCT event_id
-      FROM event_tags_flat
-      ${subqueryWhereClause}
-      ORDER BY created_at DESC
-      LIMIT {inner_limit:UInt32}
-    )
-    ${mainWhereClause}
+    ${whereClause}
     ORDER BY e.created_at DESC
-    LIMIT {outer_limit:UInt32}
+    LIMIT {limit:UInt32}
   `;
 
   const resultSet = await clickhouse.query({

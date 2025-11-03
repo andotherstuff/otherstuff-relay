@@ -165,67 +165,86 @@ export class NostrRelay {
   }
 
   private async queryEvents(filter: NostrFilter): Promise<NostrEvent[]> {
-    const conditions: string[] = [];
+    const mainConditions: string[] = [];
+    const tagConditions: string[] = [];
     const params: Record<string, unknown> = {};
 
+    // Handle ID filters
     if (filter.ids && filter.ids.length > 0) {
-      conditions.push(`id IN ({ids:Array(String)})`);
+      mainConditions.push(`e.id IN ({ids:Array(String)})`);
       params.ids = filter.ids;
     }
 
+    // Handle author filters
     if (filter.authors && filter.authors.length > 0) {
-      conditions.push(`pubkey IN ({authors:Array(String)})`);
+      mainConditions.push(`e.pubkey IN ({authors:Array(String)})`);
       params.authors = filter.authors;
     }
 
+    // Handle kind filters
     if (filter.kinds && filter.kinds.length > 0) {
-      conditions.push(`kind IN ({kinds:Array(UInt32)})`);
+      mainConditions.push(`e.kind IN ({kinds:Array(UInt32)})`);
       params.kinds = filter.kinds;
     }
 
+    // Handle time filters
     if (filter.since) {
-      conditions.push(`created_at >= {since:DateTime}`);
+      mainConditions.push(`e.created_at >= {since:DateTime}`);
       params.since = new Date(filter.since * 1000);
     }
 
     if (filter.until) {
-      conditions.push(`created_at <= {until:DateTime}`);
+      mainConditions.push(`e.created_at <= {until:DateTime}`);
       params.until = new Date(filter.until * 1000);
     }
 
-    // Handle tag filters (#e, #p, etc.)
+    // Handle tag filters (#e, #p, #t, etc.) using subquery pattern
+    const tagFilters: string[] = [];
     for (const [key, values] of Object.entries(filter)) {
       if (key.startsWith("#") && Array.isArray(values) && values.length > 0) {
         const tagName = key.substring(1);
         const paramName = `tag_${tagName}`;
-        const tagNameParam = `tagname_${tagName}`;
-        conditions.push(
-          `arrayExists(tag -> tag[1] = {${tagNameParam}:String} AND has(({${paramName}:Array(String)}), tag[2]), tags)`,
+        tagConditions.push(
+          `tag_name = {tagname_${tagName}:String} AND tag_value_1 IN ({${paramName}:Array(String)})`
         );
         params[paramName] = values;
-        params[tagNameParam] = tagName;
+        params[`tagname_${tagName}`] = tagName;
+        tagFilters.push(`tag_name = {tagname_${tagName}:String} AND tag_value_1 IN ({${paramName}:Array(String)})`);
       }
     }
 
-    const whereClause = conditions.length > 0
-      ? `WHERE ${conditions.join(" AND ")}`
-      : "";
+    // Build the main query
+    let whereClause = "";
+    if (mainConditions.length > 0) {
+      whereClause = `WHERE ${mainConditions.join(" AND ")}`;
+    }
+
+    // Add tag subquery if there are tag filters
+    if (tagFilters.length > 0) {
+      const tagWhere = tagFilters.join(" AND ");
+      if (whereClause) {
+        whereClause += ` AND e.id IN (
+          SELECT event_id
+          FROM event_tags_flat
+          WHERE ${tagWhere}
+        )`;
+      } else {
+        whereClause = `WHERE e.id IN (
+          SELECT event_id
+          FROM event_tags_flat
+          WHERE ${tagWhere}
+        )`;
+      }
+    }
 
     const limit = Math.min(filter.limit || 500, 5000);
     params.limit = limit;
 
     const query = `
-      SELECT
-        id,
-        pubkey,
-        toUnixTimestamp(created_at) as created_at,
-        kind,
-        tags,
-        content,
-        sig
-      FROM events_local
+      SELECT e.*
+      FROM events_local AS e
       ${whereClause}
-      ORDER BY created_at DESC
+      ORDER BY e.created_at DESC
       LIMIT {limit:UInt32}
     `;
 
