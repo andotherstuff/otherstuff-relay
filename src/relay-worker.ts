@@ -524,21 +524,6 @@ async function handleClose(connId: string, subId: string): Promise<void> {
   await metrics.setSubscriptions(totalSubs);
 }
 
-async function handleDisconnect(connId: string): Promise<void> {
-  // Remove from Redis
-  await redis.del(`nostr:subs:${connId}`);
-  await redis.del(`nostr:sub:counts:${connId}`);
-  await redis.del(`nostr:sub:limits:${connId}`);
-  await redis.del(`nostr:sub:eose:${connId}`);
-
-  // Clean up response queue to prevent memory leak
-  await redis.del(`nostr:responses:${connId}`);
-
-  // Update subscription count
-  const totalSubs = await countTotalSubscriptions();
-  await metrics.setSubscriptions(totalSubs);
-}
-
 // Helper function to count total subscriptions across all connections
 async function countTotalSubscriptions(): Promise<number> {
   const keys = await redis.keys("nostr:subs:*");
@@ -680,19 +665,7 @@ async function processMessages() {
         const { connId, msg } = messageData;
 
         try {
-          // Try to parse as standard Nostr message
-          let parsed;
-          try {
-            parsed = n.json().pipe(n.clientMsg()).parse(msg);
-          } catch {
-            // Check if it's our internal DISCONNECT message
-            const msgArray = JSON.parse(msg);
-            if (Array.isArray(msgArray) && msgArray[0] === "DISCONNECT") {
-              await handleDisconnect(connId);
-              continue;
-            }
-            throw new Error("Invalid message format");
-          }
+          const parsed = n.json().pipe(n.clientMsg()).parse(msg);
 
           switch (parsed[0]) {
             case "EVENT": {

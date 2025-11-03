@@ -203,26 +203,18 @@ app.get("/", (c) => {
       clearInterval(responsePoller);
     }
 
-    // Clean up response queue immediately to prevent memory leak
-    // Do this BEFORE sending disconnect to avoid race condition
+    // Clean up all connection-related data in Redis
     try {
+      // Clean up subscriptions and tracking data
+      await redis.del(`nostr:subs:${connId}`);
+      await redis.del(`nostr:sub:counts:${connId}`);
+      await redis.del(`nostr:sub:limits:${connId}`);
+      await redis.del(`nostr:sub:eose:${connId}`);
+
+      // Clean up response queue to prevent memory leak
       await redis.del(`nostr:responses:${connId}`);
     } catch (err) {
-      console.error("Error cleaning up responses:", err);
-    }
-
-    // Send disconnect message to relay workers for cleanup
-    // Workers will also attempt to delete the response queue
-    try {
-      await redis.lPush(
-        "nostr:relay:queue",
-        JSON.stringify({
-          connId,
-          msg: JSON.stringify(["DISCONNECT"]),
-        }),
-      );
-    } catch (err) {
-      console.error("Error sending disconnect:", err);
+      console.error("Error cleaning up connection data:", err);
     }
   };
 
