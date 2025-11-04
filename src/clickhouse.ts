@@ -47,7 +47,6 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
     // Default to 500, cap at 5000
     const limit = Math.min(filter.limit || 500, 5000);
 
-    // Extract tag filters
     const tagFilters: Array<{ name: string; values: string[] }> = [];
     const nonTagFilter: NostrFilter = {};
 
@@ -68,18 +67,16 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
       }
     }
 
-    // If we have tag filters, use the flattened tag view for better performance
+    // Use flattened tag view for tag queries
     if (tagFilters.length > 0) {
       return await this.queryEventsWithTags(filter, tagFilters, limit, signal);
     }
 
-    // For non-tag queries, use the main table
+    // Use main table for non-tag queries
     return await this.queryEventsSimple(nonTagFilter, limit, signal);
   }
 
-  /**
-   * Query events without tag filters (optimized path)
-   */
+  
   private async queryEventsSimple(
     filter: NostrFilter,
     limit: number,
@@ -163,7 +160,7 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
   }
 
   /**
-   * Query events with tag filters (uses materialized view)
+   * Query events with tag filters (optimized pattern from tagQuery branch)
    */
   private async queryEventsWithTags(
     filter: NostrFilter,
@@ -171,73 +168,83 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
     limit: number,
     signal?: AbortSignal,
   ): Promise<NostrEvent[]> {
-    // Build conditions for tag filters using flattened table
-    const tagConditions: string[] = [];
+    
+    const conditions: string[] = [];
     const params: Record<string, unknown> = {};
 
-    for (let i = 0; i < tagFilters.length; i++) {
-      const { name, values } = tagFilters[i];
-      const paramName = `tag_values_${i}`;
-      const tagNameParam = `tag_name_${i}`;
-
-      tagConditions.push(
-        `tag_name = {${tagNameParam}:String} AND tag_value_1 IN ({${paramName}:Array(String)})`,
-      );
-      params[paramName] = values;
-      params[tagNameParam] = name;
+    
+    if (filter.ids && filter.ids.length > 0) {
+      conditions.push(`e.id IN ({ids:Array(String)})`);
+      params.ids = filter.ids;
     }
 
-    const tagWhereClause = tagConditions.join(" OR ");
-
-    // Build additional conditions
-    const otherConditions: string[] = [];
-
+    
     if (filter.authors && filter.authors.length > 0) {
-      otherConditions.push(`pubkey IN ({authors:Array(String)})`);
+      conditions.push(`e.pubkey IN ({authors:Array(String)})`);
       params.authors = filter.authors;
     }
 
+    
     if (filter.kinds && filter.kinds.length > 0) {
-      otherConditions.push(`kind IN ({kinds:Array(UInt16)})`);
+      conditions.push(`e.kind IN ({kinds:Array(UInt16)})`);
       params.kinds = filter.kinds;
     }
 
+    
     if (filter.since) {
-      otherConditions.push(`created_at >= {since:DateTime}`);
-      params.since = new Date(filter.since * 1000);
+      conditions.push(`e.created_at >= {since:UInt32}`);
+      params.since = filter.since;
+    } else {
+      // Default time filtering for tag queries if no explicit since is provided
+      conditions.push(`e.created_at >= toUnixTimestamp(now() - INTERVAL 30 DAY)`);
     }
 
     if (filter.until) {
-      otherConditions.push(`created_at <= {until:DateTime}`);
-      params.until = new Date(filter.until * 1000);
+      conditions.push(`e.created_at <= {until:UInt32}`);
+      params.until = filter.until;
     }
 
-    const allConditions = [tagWhereClause, ...otherConditions];
-    const whereClause = `WHERE ${allConditions.join(" AND ")}`;
+    // Tag subquery - no time filtering here
+    if (tagFilters.length > 0) {
+      const tagConditions: string[] = [];
+      
+      for (let i = 0; i < tagFilters.length; i++) {
+        const { name, values } = tagFilters[i];
+        const paramName = `tag_values_${i}`;
+        const tagNameParam = `tag_name_${i}`;
+
+        tagConditions.push(
+          `tag_name = {${tagNameParam}:String} AND tag_value_1 IN ({${paramName}:Array(String)})`,
+        );
+        params[paramName] = values;
+        params[tagNameParam] = name;
+      }
+
+      // Add tag subquery
+      conditions.push(`e.id IN (
+        SELECT event_id
+        FROM event_tags_flat
+        WHERE ${tagConditions.join(" AND ")}
+      )`);
+    }
+
+    
+    const whereClause = conditions.length > 0
+      ? `WHERE ${conditions.join(" AND ")}`
+      : "";
 
     params.limit = limit;
 
-    // Query using the flattened tag view with JOIN to main table
+    
     const query = `
-      SELECT DISTINCT
-        e.id,
-        e.pubkey,
-        toUnixTimestamp(e.created_at) as created_at,
-        e.kind,
-        e.tags,
-        e.content,
-        e.sig
-      FROM events_local e
-      INNER JOIN (
-        SELECT DISTINCT event_id, created_at
-        FROM event_tags_flat
-        ${whereClause}
-        ORDER BY created_at DESC
-        LIMIT {limit:UInt32}
-      ) t ON e.id = t.event_id
+      SELECT DISTINCT e.*
+      FROM events_local AS e
+      ${whereClause}
       ORDER BY e.created_at DESC
       LIMIT {limit:UInt32}
     `;
+
+    
 
     const resultSet = await this.clickhouse.query({
       query,
