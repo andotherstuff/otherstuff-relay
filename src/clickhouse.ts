@@ -131,6 +131,9 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
       LIMIT {limit:UInt32}
     `;
 
+    console.log("[QUERY] Simple query:", query);
+    console.log("[QUERY] Params:", JSON.stringify(params));
+
     const resultSet = await this.clickhouse.query({
       query,
       query_params: params,
@@ -244,7 +247,8 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
       LIMIT {limit:UInt32}
     `;
 
-    
+    console.log("[QUERY] Tag query:", query);
+    console.log("[QUERY] Params:", JSON.stringify(params));
 
     const resultSet = await this.clickhouse.query({
       query,
