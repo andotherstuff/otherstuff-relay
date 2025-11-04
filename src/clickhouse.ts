@@ -214,28 +214,21 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
         const paramName = `tag_values_${i}`;
         const tagNameParam = `tag_name_${i}`;
 
-        if (values.length === 1) {
-          // Single tag query pattern
-          tagConditions.push(
-            `tag_name = {${tagNameParam}:String} AND tag_value_1 = {${paramName}:String}`,
-          );
-          params[paramName] = values[0];
-        } else {
-          // Multi-tag query pattern
-          tagConditions.push(
-            `tag_name = {${tagNameParam}:String} AND tag_value_1 IN ({${paramName}:Array(String)})`,
-          );
-          params[paramName] = values;
-        }
+        // Use IN for both single and multi values - deduplication
+        tagConditions.push(
+          `tag_name = {${tagNameParam}:String} AND tag_value_1 IN ({${paramName}:Array(String)})`,
+        );
+        params[paramName] = values;
         params[tagNameParam] = name;
       }
 
-      // Add tag subquery following the exact pattern
-      conditions.push(`e.id IN (
+      // Add tag subquery using the superior ANY pattern
+      conditions.push(`e.id = ANY (
         SELECT event_id
         FROM event_tags_flat
-        WHERE created_at >= toUnixTimestamp(now() - INTERVAL 30 DAY)
-          AND ${tagConditions.join(" AND ")}
+        WHERE ${tagConditions.join(" AND ")}
+          AND created_at >= toUnixTimestamp(now() - INTERVAL 30 DAY)
+        LIMIT 10000
       )`);
     }
 
