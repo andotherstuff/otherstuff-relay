@@ -211,7 +211,7 @@ export class NostrRelay {
       ? `WHERE ${conditions.join(" AND ")}`
       : "";
 
-    const limit = Math.min(filter.limit || 500, 5000);
+    const limit = Math.min(filter.limit || 100, 5000);
     params.limit = limit;
 
     const query = `

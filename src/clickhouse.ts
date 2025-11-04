@@ -44,8 +44,8 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
       return [];
     }
 
-    // Default to 500, cap at 5000
-    const limit = Math.min(filter.limit || 500, 5000);
+    // Default to 100, cap at 5000
+    const limit = Math.min(filter.limit || 100, 5000);
 
     const tagFilters: Array<{ name: string; values: string[] }> = [];
     const nonTagFilter: NostrFilter = {};
