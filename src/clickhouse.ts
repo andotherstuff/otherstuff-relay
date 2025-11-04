@@ -214,10 +214,19 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
         const paramName = `tag_values_${i}`;
         const tagNameParam = `tag_name_${i}`;
 
-        tagConditions.push(
-          `tag_name = {${tagNameParam}:String} AND tag_value_1 IN ({${paramName}:Array(String)})`,
-        );
-        params[paramName] = values;
+        if (values.length === 1) {
+          // Single tag query pattern
+          tagConditions.push(
+            `tag_name = {${tagNameParam}:String} AND tag_value_1 = {${paramName}:String}`,
+          );
+          params[paramName] = values[0];
+        } else {
+          // Multi-tag query pattern
+          tagConditions.push(
+            `tag_name = {${tagNameParam}:String} AND tag_value_1 IN ({${paramName}:Array(String)})`,
+          );
+          params[paramName] = values;
+        }
         params[tagNameParam] = name;
       }
 
@@ -225,7 +234,8 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
       conditions.push(`e.id IN (
         SELECT event_id
         FROM event_tags_flat
-        WHERE ${tagConditions.join(" AND ")}
+        WHERE created_at >= toUnixTimestamp(now() - INTERVAL 30 DAY)
+          AND ${tagConditions.join(" AND ")}
       )`);
     }
 
