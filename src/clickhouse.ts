@@ -163,7 +163,7 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
   }
 
   /**
-   * Query events with tag filters (optimized pattern from tagQuery branch)
+   * Query events with tag filters (optimized pattern matching the specified format)
    */
   private async queryEventsWithTags(
     filter: NostrFilter,
@@ -175,31 +175,29 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
     const conditions: string[] = [];
     const params: Record<string, unknown> = {};
 
-    
+    // Always start with time filtering - either user-specified or default 30 days
+    if (filter.since) {
+      conditions.push(`e.created_at >= {since:UInt32}`);
+      params.since = filter.since;
+    } else {
+      // Default time filtering for tag queries - always applied
+      conditions.push(`e.created_at >= toUnixTimestamp(now() - INTERVAL 30 DAY)`);
+    }
+
+    // Add other filter conditions
     if (filter.ids && filter.ids.length > 0) {
       conditions.push(`e.id IN ({ids:Array(String)})`);
       params.ids = filter.ids;
     }
 
-    
     if (filter.authors && filter.authors.length > 0) {
       conditions.push(`e.pubkey IN ({authors:Array(String)})`);
       params.authors = filter.authors;
     }
 
-    
     if (filter.kinds && filter.kinds.length > 0) {
       conditions.push(`e.kind IN ({kinds:Array(UInt16)})`);
       params.kinds = filter.kinds;
-    }
-
-    
-    if (filter.since) {
-      conditions.push(`e.created_at >= {since:UInt32}`);
-      params.since = filter.since;
-    } else {
-      // Default time filtering for tag queries if no explicit since is provided
-      conditions.push(`e.created_at >= toUnixTimestamp(now() - INTERVAL 30 DAY)`);
     }
 
     if (filter.until) {
@@ -207,7 +205,7 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
       params.until = filter.until;
     }
 
-    // Tag subquery - no time filtering here
+    // Tag subquery - always added when tag filters exist
     if (tagFilters.length > 0) {
       const tagConditions: string[] = [];
       
@@ -223,7 +221,7 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
         params[tagNameParam] = name;
       }
 
-      // Add tag subquery
+      // Add tag subquery following the exact pattern
       conditions.push(`e.id IN (
         SELECT event_id
         FROM event_tags_flat
@@ -447,12 +445,9 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
         INDEX idx_kind kind TYPE minmax GRANULARITY 4,
         INDEX idx_pubkey pubkey TYPE bloom_filter(0.01) GRANULARITY 4
       ) ENGINE = ReplacingMergeTree(indexed_at)
-      ORDER BY (id, created_at, kind, pubkey)
       PARTITION BY toYYYYMM(toDateTime(created_at))
-      SETTINGS 
-        index_granularity = 8192,
-        allow_nullable_key = 0
-      COMMENT 'Main Nostr events table with time-first sort order'`,
+      ORDER BY (created_at, kind, pubkey, id)
+      SETTINGS index_granularity = 8192`,
     });
 
     // Create flattened tag materialized view for fast tag queries
