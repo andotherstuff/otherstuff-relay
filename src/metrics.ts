@@ -14,6 +14,12 @@ const METRICS_KEYS = {
   queries_total: "nostr:metrics:queries_total",
   subscriptions_active: "nostr:metrics:subscriptions_active",
   events_by_kind: "nostr:metrics:events_by_kind",
+  websocket_opens: "nostr:metrics:websocket_opens",
+  websocket_closes: "nostr:metrics:websocket_closes",
+  websocket_errors: "nostr:metrics:websocket_errors",
+  messages_sent: "nostr:metrics:messages_sent",
+  messages_received: "nostr:metrics:messages_received",
+  response_poller_invocations: "nostr:metrics:response_poller_invocations",
 } as const;
 
 // Interface for Redis client methods we use
@@ -75,6 +81,30 @@ export class RedisMetrics {
     await this.redis.incrBy(METRICS_KEYS.events_rejected, delta);
   }
 
+  async incrementWebSocketOpens(delta: number = 1): Promise<void> {
+    await this.redis.incrBy(METRICS_KEYS.websocket_opens, delta);
+  }
+
+  async incrementWebSocketCloses(delta: number = 1): Promise<void> {
+    await this.redis.incrBy(METRICS_KEYS.websocket_closes, delta);
+  }
+
+  async incrementWebSocketErrors(delta: number = 1): Promise<void> {
+    await this.redis.incrBy(METRICS_KEYS.websocket_errors, delta);
+  }
+
+  async incrementMessagesSent(delta: number = 1): Promise<void> {
+    await this.redis.incrBy(METRICS_KEYS.messages_sent, delta);
+  }
+
+  async incrementMessagesReceived(delta: number = 1): Promise<void> {
+    await this.redis.incrBy(METRICS_KEYS.messages_received, delta);
+  }
+
+  async incrementResponsePollerInvocations(delta: number = 1): Promise<void> {
+    await this.redis.incrBy(METRICS_KEYS.response_poller_invocations, delta);
+  }
+
   async incrementQueriesTotal(delta: number = 1): Promise<void> {
     await this.redis.incrBy(METRICS_KEYS.queries_total, delta);
   }
@@ -118,6 +148,36 @@ export class RedisMetrics {
     return value ? parseInt(value, 10) : 0;
   }
 
+  async getWebSocketOpens(): Promise<number> {
+    const value = await this.redis.get(METRICS_KEYS.websocket_opens);
+    return value ? parseInt(value, 10) : 0;
+  }
+
+  async getWebSocketCloses(): Promise<number> {
+    const value = await this.redis.get(METRICS_KEYS.websocket_closes);
+    return value ? parseInt(value, 10) : 0;
+  }
+
+  async getWebSocketErrors(): Promise<number> {
+    const value = await this.redis.get(METRICS_KEYS.websocket_errors);
+    return value ? parseInt(value, 10) : 0;
+  }
+
+  async getMessagesSent(): Promise<number> {
+    const value = await this.redis.get(METRICS_KEYS.messages_sent);
+    return value ? parseInt(value, 10) : 0;
+  }
+
+  async getMessagesReceived(): Promise<number> {
+    const value = await this.redis.get(METRICS_KEYS.messages_received);
+    return value ? parseInt(value, 10) : 0;
+  }
+
+  async getResponsePollerInvocations(): Promise<number> {
+    const value = await this.redis.get(METRICS_KEYS.response_poller_invocations);
+    return value ? parseInt(value, 10) : 0;
+  }
+
   async getQueriesTotal(): Promise<number> {
     const value = await this.redis.get(METRICS_KEYS.queries_total);
     return value ? parseInt(value, 10) : 0;
@@ -149,13 +209,16 @@ export class RedisMetrics {
     const values = await this.redis.mGet(keys);
 
     const metrics: Record<string, number> = {};
-    Object.entries(METRICS_KEYS).forEach(([key, redisKey], index) => {
+    let valueIndex = 0;
+    
+    for (const [key, redisKey] of Object.entries(METRICS_KEYS)) {
       if (redisKey !== METRICS_KEYS.events_by_kind) {
-        metrics[key] = values[index]
-          ? parseInt(values[index] as string, 10)
+        metrics[key] = values[valueIndex]
+          ? parseInt(values[valueIndex] as string, 10)
           : 0;
+        valueIndex++;
       }
-    });
+    }
 
     return metrics;
   }
@@ -209,6 +272,36 @@ export const queriesCounter = {
     getMetricsInstance().incrementQueriesTotal(delta || 1),
 };
 
+export const webSocketOpensCounter = {
+  inc: (delta?: number) =>
+    getMetricsInstance().incrementWebSocketOpens(delta || 1),
+};
+
+export const webSocketClosesCounter = {
+  inc: (delta?: number) =>
+    getMetricsInstance().incrementWebSocketCloses(delta || 1),
+};
+
+export const webSocketErrorsCounter = {
+  inc: (delta?: number) =>
+    getMetricsInstance().incrementWebSocketErrors(delta || 1),
+};
+
+export const messagesSentCounter = {
+  inc: (delta?: number) =>
+    getMetricsInstance().incrementMessagesSent(delta || 1),
+};
+
+export const messagesReceivedCounter = {
+  inc: (delta?: number) =>
+    getMetricsInstance().incrementMessagesReceived(delta || 1),
+};
+
+export const responsePollerInvocationsCounter = {
+  inc: (delta?: number) =>
+    getMetricsInstance().incrementResponsePollerInvocations(delta || 1),
+};
+
 export async function getMetrics(): Promise<string> {
   // Get metrics instance
   const metrics = getMetricsInstance();
@@ -260,6 +353,44 @@ export async function getMetrics(): Promise<string> {
     help: "Total queries processed",
     registers: [register],
   }).inc(allMetrics.queries_total);
+
+  // WebSocket lifecycle metrics
+  new Counter({
+    name: "nostr_websocket_opens_total",
+    help: "Total WebSocket connections opened",
+    registers: [register],
+  }).inc(allMetrics.websocket_opens || 0);
+
+  new Counter({
+    name: "nostr_websocket_closes_total",
+    help: "Total WebSocket connections closed",
+    registers: [register],
+  }).inc(allMetrics.websocket_closes || 0);
+
+  new Counter({
+    name: "nostr_websocket_errors_total",
+    help: "Total WebSocket errors",
+    registers: [register],
+  }).inc(allMetrics.websocket_errors || 0);
+
+  // Message and polling metrics
+  new Counter({
+    name: "nostr_messages_sent_total",
+    help: "Total messages sent to clients",
+    registers: [register],
+  }).inc(allMetrics.messages_sent || 0);
+
+  new Counter({
+    name: "nostr_messages_received_total",
+    help: "Total messages received from clients",
+    registers: [register],
+  }).inc(allMetrics.messages_received || 0);
+
+  new Counter({
+    name: "nostr_response_poller_invocations_total",
+    help: "Total response poller invocations",
+    registers: [register],
+  }).inc(allMetrics.response_poller_invocations || 0);
 
   // Event kind metrics - create a counter for each kind
   const eventsByKindCounter = new Counter({

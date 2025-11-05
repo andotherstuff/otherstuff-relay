@@ -7,6 +7,12 @@ import {
   getMetricsInstance,
   initializeMetrics,
   register,
+  webSocketOpensCounter,
+  webSocketClosesCounter,
+  webSocketErrorsCounter,
+  messagesSentCounter,
+  messagesReceivedCounter,
+  responsePollerInvocationsCounter,
 } from "./metrics.ts";
 import type { NostrRelayMsg } from "@nostrify/nostrify";
 
@@ -59,7 +65,9 @@ app.get("/", (c) => {
 
   socket.onopen = async () => {
     metrics.incrementConnections();
+    metrics.incrementWebSocketOpens();
     connectionsGauge.inc();
+    webSocketOpensCounter.inc();
 
     // Set initial TTL on response queue as safety net for orphaned queues
     // This will be reset whenever we successfully consume messages
@@ -67,6 +75,10 @@ app.get("/", (c) => {
 
     // Start polling for responses from relay workers
     responsePoller = setInterval(async () => {
+      // Track poller invocation
+      metrics.incrementResponsePollerInvocations();
+      responsePollerInvocationsCounter.inc();
+
       try {
         // Non-blocking pop of responses
         const responses = await redis.lPopCount(queueKey, 100);
@@ -90,6 +102,10 @@ app.get("/", (c) => {
   };
 
   socket.onmessage = async (e) => {
+    // Track message received
+    metrics.incrementMessagesReceived();
+    messagesReceivedCounter.inc();
+
     try {
       // Queue the raw message for relay workers to process
       // Don't parse or validate here - let workers do that in parallel
@@ -108,7 +124,9 @@ app.get("/", (c) => {
 
   socket.onclose = async () => {
     metrics.incrementConnections(-1);
+    metrics.incrementWebSocketCloses();
     connectionsGauge.dec();
+    webSocketClosesCounter.inc();
 
     // Stop polling for responses
     if (responsePoller !== null) {
@@ -130,6 +148,8 @@ app.get("/", (c) => {
   };
 
   socket.onerror = (err) => {
+    metrics.incrementWebSocketErrors();
+    webSocketErrorsCounter.inc();
     if (Deno.env.get("DEBUG")) {
       console.error("WebSocket error:", err);
     }
@@ -138,6 +158,10 @@ app.get("/", (c) => {
   function send(msg: NostrRelayMsg) {
     try {
       if (socket.readyState === WebSocket.OPEN) {
+        // Track message sent
+        metrics.incrementMessagesSent();
+        messagesSentCounter.inc();
+        
         socket.send(JSON.stringify(msg));
       }
     } catch (err) {
