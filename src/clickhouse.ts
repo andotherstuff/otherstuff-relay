@@ -175,16 +175,7 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
     const conditions: string[] = [];
     const params: Record<string, unknown> = {};
 
-    // Always start with time filtering - either user-specified or default 30 days
-    if (filter.since) {
-      conditions.push(`e.created_at >= {since:UInt32}`);
-      params.since = filter.since;
-    } else {
-      // Default time filtering for tag queries - always applied
-      conditions.push(`e.created_at >= toUnixTimestamp(now() - INTERVAL 30 DAY)`);
-    }
-
-    // Add other filter conditions
+    // Add other filter conditions (time filtering handled separately)
     if (filter.ids && filter.ids.length > 0) {
       conditions.push(`e.id IN ({ids:Array(String)})`);
       params.ids = filter.ids;
@@ -222,13 +213,23 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
         params[tagNameParam] = name;
       }
 
-      // Add tag subquery using IN pattern
+      // Add tag subquery using PREWHERE pattern for optimal performance
+      const tagWhereConditions = tagConditions.join(" AND ");
       conditions.push(`e.id IN (
         SELECT event_id
         FROM event_tags_flat
-        WHERE ${tagConditions.join(" AND ")}
-          AND created_at >= toUnixTimestamp(now() - INTERVAL 30 DAY)
+        PREWHERE created_at >= toUnixTimestamp(now() - INTERVAL 30 DAY)
+        WHERE ${tagWhereConditions}
       )`);
+    }
+
+    // Always add time filtering as the last condition in the main WHERE clause
+    if (filter.since) {
+      conditions.push(`e.created_at >= {since:UInt32}`);
+      params.since = filter.since;
+    } else {
+      // Default time filtering for tag queries - always applied
+      conditions.push(`e.created_at >= toUnixTimestamp(now() - INTERVAL 30 DAY)`);
     }
 
     
