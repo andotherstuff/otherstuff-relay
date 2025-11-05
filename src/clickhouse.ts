@@ -222,13 +222,12 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
         params[tagNameParam] = name;
       }
 
-      // Add tag subquery using the superior ANY pattern
-      conditions.push(`e.id = ANY (
+      // Add tag subquery using IN pattern
+      conditions.push(`e.id IN (
         SELECT event_id
         FROM event_tags_flat
         WHERE ${tagConditions.join(" AND ")}
           AND created_at >= toUnixTimestamp(now() - INTERVAL 30 DAY)
-        LIMIT 10000
       )`);
     }
 
@@ -241,7 +240,7 @@ export class ClickhouseRelay implements NRelay, AsyncDisposable {
 
     
     const query = `
-      SELECT DISTINCT e.*
+      SELECT e.*
       FROM events_local AS e
       ${whereClause}
       ORDER BY e.created_at DESC
