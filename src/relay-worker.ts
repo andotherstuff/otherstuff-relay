@@ -11,6 +11,7 @@ import { createClient as createRedisClient } from "redis";
 import { Config } from "./config.ts";
 import { getMetricsInstance, initializeMetrics } from "./metrics.ts";
 import { ClickhouseRelay } from "./clickhouse.ts";
+import { RedisEvents } from "./redis-events.ts";
 import type {
   NostrEvent,
   NostrFilter,
@@ -44,6 +45,10 @@ const wasmInitialized = (async () => {
 
 // Initialize ClickhouseRelay
 const relay = new ClickhouseRelay(clickhouse);
+
+// Initialize RedisEvents for hot event storage
+const redisEvents = new RedisEvents(config);
+await redisEvents.connect();
 
 const WORKER_ID = crypto.randomUUID().slice(0, 8);
 console.log(`🔧 Relay worker ${WORKER_ID} started, waiting for messages...`);
@@ -79,6 +84,16 @@ const CHECK_AND_INCREMENT_SCRIPT = `
 // Helper function to check if an event is ephemeral
 function isEphemeral(kind: number): boolean {
   return kind >= 20000 && kind < 30000;
+}
+
+// Helper function to check if an event should be considered "hot"
+// Hot events are recent events that are likely to be queried frequently
+function isHotEvent(event: NostrEvent): boolean {
+  const now = Math.floor(Date.now() / 1000);
+  const eventAge = now - event.created_at;
+  
+  // Events younger than 1 hour are considered hot
+  return eventAge < 3600;
 }
 
 // Helper function to check if an event is too old to broadcast
@@ -154,8 +169,14 @@ async function handleEvent(
   }
 
   try {
-    // Only store non-ephemeral events
-    // Ephemeral events are only broadcast, never stored
+    // Store in Redis for fast access if it's a hot event
+    // This provides fast access for recent events while Redis handles expiration
+    if (isHotEvent(event)) {
+      await redisEvents.storeEvent(event);
+    }
+
+    // Only store non-ephemeral events in ClickHouse
+    // Ephemeral events are only broadcast, never stored in persistent storage
     if (!ephemeral) {
       await redis.lPush("nostr:events:queue", JSON.stringify(event));
     }
@@ -222,12 +243,53 @@ async function handleReq(
     return;
   }
 
-  // Query historical events for each filter
+  // First, try to get hot events from Redis
+  let hotEvents: NostrEvent[] = [];
+  try {
+    hotEvents = await redisEvents.queryEvents(filters);
+    if (hotEvents.length > 0) {
+      console.log(`🔥 Found ${hotEvents.length} hot events from Redis`);
+    }
+  } catch (error) {
+    console.error("Redis query failed, falling back to ClickHouse:", error);
+  }
+
+  // Query historical events from ClickHouse for each filter
   const queryPromises = filters.map(async (filter) => {
     try {
       const events = await relay.query([filter]);
 
-      // Check if still needed before sending each event
+      // Send hot events first (they're already filtered by the query)
+      for (const event of hotEvents) {
+        // Atomically check and increment (prevents race with broadcast events)
+        const result = await redis.eval(
+          CHECK_AND_INCREMENT_SCRIPT,
+          {
+            keys: [
+              `nostr:sub:counts:${connId}`,
+              `nostr:sub:limits:${connId}`,
+            ],
+            arguments: [subId],
+          },
+        ) as number[];
+
+        const shouldSend = result[0] === 1;
+        const limitReached = result[2] === 1;
+
+        // If limit reached, stop sending events
+        if (!shouldSend) {
+          break;
+        }
+
+        await sendResponse(connId, ["EVENT", subId, event]);
+
+        // If we just reached the limit, we can stop
+        if (limitReached) {
+          break;
+        }
+      }
+
+      // Check if still needed before sending each historical event
       for (const event of events) {
         // Atomically check and increment (prevents race with broadcast events)
         const result = await redis.eval(
@@ -436,6 +498,7 @@ async function processMessages() {
 // Graceful shutdown
 const shutdown = async () => {
   console.log(`Shutting down relay worker ${WORKER_ID}...`);
+  await redisEvents.close();
   await redis.quit();
   await clickhouse.close();
   Deno.exit(0);
