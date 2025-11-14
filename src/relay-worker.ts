@@ -1,16 +1,16 @@
 /**
- * Relay worker process that bridges Redis queues with ClickhouseRelay
+ * Relay worker process that bridges Redis queues with OpenSearchRelay
  * Handles message routing, subscription state, and response delivery
  */
 import { NSchema as n } from "@nostrify/nostrify";
 import { getFilterLimit, matchFilters } from "nostr-tools";
 import { setNostrWasm, verifyEvent } from "nostr-tools/wasm";
 import { initNostrWasm } from "nostr-wasm";
-import { createClient } from "@clickhouse/client-web";
+import { Client } from "@opensearch-project/opensearch";
 import { createClient as createRedisClient } from "redis";
 import { Config } from "./config.ts";
 import { getMetricsInstance, initializeMetrics } from "./metrics.ts";
-import { ClickhouseRelay } from "./clickhouse.ts";
+import { OpenSearchRelay } from "./opensearch.ts";
 import type {
   NostrEvent,
   NostrFilter,
@@ -19,10 +19,28 @@ import type {
 
 const config = new Config(Deno.env);
 
-// ClickHouse client
-const clickhouse = createClient({
-  url: config.databaseUrl,
-});
+// OpenSearch client
+interface OpenSearchConfig {
+  node: string;
+  auth?: {
+    username: string;
+    password: string;
+  };
+}
+
+const opensearchConfig: OpenSearchConfig = {
+  node: config.opensearchUrl,
+};
+
+// Add authentication if provided
+if (config.opensearchUsername && config.opensearchPassword) {
+  opensearchConfig.auth = {
+    username: config.opensearchUsername,
+    password: config.opensearchPassword,
+  };
+}
+
+const opensearch = new Client(opensearchConfig);
 
 // Redis client
 const redis = createRedisClient({
@@ -42,8 +60,8 @@ const wasmInitialized = (async () => {
   setNostrWasm(wasm);
 })();
 
-// Initialize ClickhouseRelay
-const relay = new ClickhouseRelay(clickhouse);
+// Initialize OpenSearchRelay
+const relay = new OpenSearchRelay(opensearch);
 
 const WORKER_ID = crypto.randomUUID().slice(0, 8);
 console.log(`🔧 Relay worker ${WORKER_ID} started, waiting for messages...`);
@@ -437,7 +455,7 @@ async function processMessages() {
 const shutdown = async () => {
   console.log(`Shutting down relay worker ${WORKER_ID}...`);
   await redis.quit();
-  await clickhouse.close();
+  await opensearch.close();
   Deno.exit(0);
 };
 

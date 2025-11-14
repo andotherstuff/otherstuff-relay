@@ -1,71 +1,97 @@
-import { assertEquals, assertExists } from "@std/assert";
-import { createClient } from "@clickhouse/client-web";
-import { ClickhouseRelay } from "./clickhouse.ts";
+import { assertEquals } from "@std/assert";
+import { Client } from "@opensearch-project/opensearch";
+import { OpenSearchRelay } from "./opensearch.ts";
 import { Config } from "./config.ts";
 import { genEvent } from "@nostrify/nostrify/test";
 import { generateSecretKey, getPublicKey } from "nostr-tools";
 import type { NostrEvent } from "@nostrify/nostrify";
 
 // Setup and teardown
-async function setupRelay(): Promise<ClickhouseRelay> {
+async function setupRelay(): Promise<OpenSearchRelay> {
   const config = new Config(Deno.env);
-  const clickhouse = createClient({
-    url: config.databaseUrl,
-  });
 
-  const relay = new ClickhouseRelay(clickhouse, {
+  interface OpenSearchConfig {
+    node: string;
+    auth?: {
+      username: string;
+      password: string;
+    };
+  }
+
+  const opensearchConfig: OpenSearchConfig = {
+    node: config.opensearchUrl,
+  };
+
+  if (config.opensearchUsername && config.opensearchPassword) {
+    opensearchConfig.auth = {
+      username: config.opensearchUsername,
+      password: config.opensearchPassword,
+    };
+  }
+
+  const opensearch = new Client(opensearchConfig);
+
+  const relay = new OpenSearchRelay(opensearch, {
     relaySource: "wss://test-relay.example.com",
   });
 
-  // Run migrations to ensure tables exist
+  // Run migrations to ensure index exists
   await relay.migrate();
 
   // Clean up test data
-  await clickhouse.command({
-    query: "TRUNCATE TABLE events_local",
-  });
+  try {
+    await opensearch.deleteByQuery({
+      index: "nostr-events",
+      body: {
+        query: {
+          match_all: {},
+        },
+      },
+      refresh: true,
+    });
+  } catch {
+    // Index might not exist yet
+  }
 
   return relay;
 }
 
 Deno.test({
-  name: "ClickhouseRelay - migrate creates tables",
+  name: "OpenSearchRelay - migrate creates index",
   sanitizeResources: false,
   sanitizeOps: false,
   async fn() {
     await using _relay = await setupRelay();
 
-    // Verify main table exists
     const config = new Config(Deno.env);
-    const clickhouse = createClient({ url: config.databaseUrl });
 
-    const result = await clickhouse.query({
-      query:
-        "SELECT count() as count FROM system.tables WHERE name = 'events_local' AND database = currentDatabase()",
-      format: "JSONEachRow",
+    interface OpenSearchConfig {
+      node: string;
+      auth?: {
+        username: string;
+        password: string;
+      };
+    }
+
+    const opensearchConfig: OpenSearchConfig = { node: config.opensearchUrl };
+    if (config.opensearchUsername && config.opensearchPassword) {
+      opensearchConfig.auth = {
+        username: config.opensearchUsername,
+        password: config.opensearchPassword,
+      };
+    }
+    const opensearch = new Client(opensearchConfig);
+
+    const indexExists = await opensearch.indices.exists({
+      index: "nostr-events",
     });
 
-    const data = await result.json<{ count: number }>();
-    assertEquals(data[0].count >= 1, true, "events_local table should exist");
-
-    // Verify materialized view exists
-    const mvResult = await clickhouse.query({
-      query:
-        "SELECT count() as count FROM system.tables WHERE name = 'event_tags_flat' AND database = currentDatabase()",
-      format: "JSONEachRow",
-    });
-
-    const mvData = await mvResult.json<{ count: number }>();
-    assertEquals(
-      mvData[0].count >= 1,
-      true,
-      "event_tags_flat view should exist",
-    );
+    assertEquals(indexExists.body, true, "nostr-events index should exist");
   },
 });
 
 Deno.test({
-  name: "ClickhouseRelay - event() inserts a single event",
+  name: "OpenSearchRelay - event() inserts a single event",
   sanitizeResources: false,
   sanitizeOps: false,
   async fn() {
@@ -74,6 +100,9 @@ Deno.test({
     const testEvent = genEvent({ kind: 1, content: "Test metadata event" });
 
     await relay.event(testEvent);
+
+    // Wait for index refresh
+    await new Promise((resolve) => setTimeout(resolve, 1100));
 
     // Query to verify insertion
     const events = await relay.query([{ ids: [testEvent.id] }]);
@@ -88,7 +117,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "ClickhouseRelay - eventBatch() inserts multiple events",
+  name: "OpenSearchRelay - eventBatch() inserts multiple events",
   sanitizeResources: false,
   sanitizeOps: false,
   async fn() {
@@ -102,6 +131,9 @@ Deno.test({
 
     await relay.eventBatch(events);
 
+    // Wait for index refresh
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
     // Query all events
     const queriedEvents = await relay.query([{ kinds: [1], limit: 10 }]);
 
@@ -110,7 +142,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "ClickhouseRelay - query by ids",
+  name: "OpenSearchRelay - query by ids",
   sanitizeResources: false,
   sanitizeOps: false,
   async fn() {
@@ -121,6 +153,7 @@ Deno.test({
     const event3 = genEvent({ kind: 1, content: "Event 3" });
 
     await relay.eventBatch([event1, event2, event3]);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
 
     // Query specific events by ID
     const events = await relay.query([{ ids: [event1.id, event3.id] }]);
@@ -132,7 +165,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "ClickhouseRelay - query by authors",
+  name: "OpenSearchRelay - query by authors",
   sanitizeResources: false,
   sanitizeOps: false,
   async fn() {
@@ -143,10 +176,14 @@ Deno.test({
     const pubkey1 = getPublicKey(sk1);
 
     const event1 = genEvent({ kind: 1, content: "Event from author 1" }, sk1);
-    const event2 = genEvent({ kind: 1, content: "Another from author 1" }, sk1);
+    const event2 = genEvent(
+      { kind: 1, content: "Another from author 1" },
+      sk1,
+    );
     const event3 = genEvent({ kind: 1, content: "Event from author 2" }, sk2);
 
     await relay.eventBatch([event1, event2, event3]);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
 
     // Query events by specific author
     const events = await relay.query([{ authors: [pubkey1] }]);
@@ -159,7 +196,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "ClickhouseRelay - query by kinds",
+  name: "OpenSearchRelay - query by kinds",
   sanitizeResources: false,
   sanitizeOps: false,
   async fn() {
@@ -171,6 +208,7 @@ Deno.test({
     const event4 = genEvent({ kind: 1, content: "Another text note" });
 
     await relay.eventBatch([event1, event2, event3, event4]);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
 
     // Query only kind 1 events
     const events = await relay.query([{ kinds: [1] }]);
@@ -183,7 +221,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "ClickhouseRelay - query by time range (since/until)",
+  name: "OpenSearchRelay - query by time range (since/until)",
   sanitizeResources: false,
   sanitizeOps: false,
   async fn() {
@@ -206,6 +244,7 @@ Deno.test({
     const event3 = genEvent({ kind: 1, content: "Now", created_at: now });
 
     await relay.eventBatch([event1, event2, event3]);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
 
     // Query events since one hour ago
     const recentEvents = await relay.query([{ since: hourAgo - 10 }]);
@@ -225,7 +264,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "ClickhouseRelay - query with limit",
+  name: "OpenSearchRelay - query with limit",
   sanitizeResources: false,
   sanitizeOps: false,
   async fn() {
@@ -237,6 +276,7 @@ Deno.test({
     );
 
     await relay.eventBatch(events);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
 
     // Query with limit
     const limitedEvents = await relay.query([{ kinds: [1], limit: 5 }]);
@@ -246,7 +286,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "ClickhouseRelay - query with tag filters",
+  name: "OpenSearchRelay - query with tag filters (common tags)",
   sanitizeResources: false,
   sanitizeOps: false,
   async fn() {
@@ -277,9 +317,7 @@ Deno.test({
     }, sk);
 
     await relay.eventBatch([event1, event2, event3, event4]);
-
-    // Give the materialized view a moment to populate
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await new Promise((resolve) => setTimeout(resolve, 1100));
 
     // Query events with specific e tag
     const eTagEvents = await relay.query([{ "#e": ["event123"] }]);
@@ -293,7 +331,95 @@ Deno.test({
 });
 
 Deno.test({
-  name: "ClickhouseRelay - query with multiple filters",
+  name: "OpenSearchRelay - query with multi-letter tag filters",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  async fn() {
+    await using relay = await setupRelay();
+
+    const sk = generateSecretKey();
+
+    const event1 = genEvent({
+      kind: 1,
+      content: "Event with custom tag",
+      tags: [["custom", "value1"]],
+    }, sk);
+    const event2 = genEvent({
+      kind: 1,
+      content: "Event with another custom tag",
+      tags: [["custom", "value2"]],
+    }, sk);
+    const event3 = genEvent({
+      kind: 1,
+      content: "Event with different tag",
+      tags: [["other", "value3"]],
+    }, sk);
+
+    await relay.eventBatch([event1, event2, event3]);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    // Query events with custom tag
+    const customTagEvents = await relay.query([{ "#custom": ["value1"] }]);
+    assertEquals(
+      customTagEvents.length,
+      1,
+      "Should find one event with custom tag",
+    );
+    assertEquals(customTagEvents[0].id, event1.id);
+
+    // Query events with multiple values
+    const multiValueEvents = await relay.query([
+      { "#custom": ["value1", "value2"] },
+    ]);
+    assertEquals(
+      multiValueEvents.length,
+      2,
+      "Should find two events with custom tag values",
+    );
+  },
+});
+
+Deno.test({
+  name: "OpenSearchRelay - NIP-50 full-text search",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  async fn() {
+    await using relay = await setupRelay();
+
+    const event1 = genEvent({
+      kind: 1,
+      content: "Bitcoin is the best cryptocurrency",
+    });
+    const event2 = genEvent({
+      kind: 1,
+      content: "Ethereum and smart contracts",
+    });
+    const event3 = genEvent({
+      kind: 1,
+      content: "I love using Nostr for social media",
+    });
+
+    await relay.eventBatch([event1, event2, event3]);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    // Search for "bitcoin"
+    const bitcoinEvents = await relay.query([{ search: "bitcoin" }]);
+    assertEquals(
+      bitcoinEvents.length,
+      1,
+      "Should find one event about bitcoin",
+    );
+    assertEquals(bitcoinEvents[0].id, event1.id);
+
+    // Search for "nostr"
+    const nostrEvents = await relay.query([{ search: "nostr" }]);
+    assertEquals(nostrEvents.length, 1, "Should find one event about nostr");
+    assertEquals(nostrEvents[0].id, event3.id);
+  },
+});
+
+Deno.test({
+  name: "OpenSearchRelay - query with multiple filters",
   sanitizeResources: false,
   sanitizeOps: false,
   async fn() {
@@ -307,6 +433,7 @@ Deno.test({
     const event3 = genEvent({ kind: 1, content: "Kind 1 from author 2" }, sk2);
 
     await relay.eventBatch([event1, event2, event3]);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
 
     // Query with multiple filters (should OR them)
     const events = await relay.query([
@@ -323,7 +450,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "ClickhouseRelay - count() returns event count",
+  name: "OpenSearchRelay - count() returns event count",
   sanitizeResources: false,
   sanitizeOps: false,
   async fn() {
@@ -335,6 +462,7 @@ Deno.test({
     );
 
     await relay.eventBatch(events);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
 
     // Count all kind 1 events
     const result = await relay.count([{ kinds: [1] }]);
@@ -344,7 +472,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "ClickhouseRelay - req() streams events",
+  name: "OpenSearchRelay - req() streams events",
   sanitizeResources: false,
   sanitizeOps: false,
   async fn() {
@@ -354,6 +482,7 @@ Deno.test({
     const event2 = genEvent({ kind: 1, content: "Event 2" });
 
     await relay.eventBatch([event1, event2]);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
 
     // Stream events
     const messages: Array<["EVENT" | "EOSE", string, NostrEvent?]> = [];
@@ -371,7 +500,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "ClickhouseRelay - query with limit 0 returns empty",
+  name: "OpenSearchRelay - query with limit 0 returns empty",
   sanitizeResources: false,
   sanitizeOps: false,
   async fn() {
@@ -379,6 +508,7 @@ Deno.test({
 
     const event = genEvent({ kind: 1, content: "Test event" });
     await relay.event(event);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
 
     // Query with limit 0 (realtime-only subscription)
     const events = await relay.query([{ kinds: [1], limit: 0 }]);
@@ -388,7 +518,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "ClickhouseRelay - duplicate events are replaced",
+  name: "OpenSearchRelay - duplicate events are replaced",
   sanitizeResources: false,
   sanitizeOps: false,
   async fn() {
@@ -400,18 +530,18 @@ Deno.test({
     // Insert the same event twice
     await relay.event(event);
     await relay.event(event);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
 
-    // Query should return only one event due to ReplacingMergeTree
-    // Note: ClickHouse may take time to merge, so we just verify we can query it
+    // Query should return only one event (same ID overwrites)
     const events = await relay.query([{ ids: [event.id] }]);
 
-    assertExists(events[0], "Event should exist");
+    assertEquals(events.length, 1, "Should have only one event");
     assertEquals(events[0].id, event.id);
   },
 });
 
 Deno.test({
-  name: "ClickhouseRelay - complex query with multiple conditions",
+  name: "OpenSearchRelay - complex query with multiple conditions",
   sanitizeResources: false,
   sanitizeOps: false,
   async fn() {
@@ -441,9 +571,7 @@ Deno.test({
     }, sk);
 
     await relay.eventBatch([event1, event2, event3]);
-
-    // Give the materialized view a moment to populate
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await new Promise((resolve) => setTimeout(resolve, 1100));
 
     // Query with multiple conditions
     const events = await relay.query([{
@@ -459,7 +587,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "ClickhouseRelay - eventBatch with empty array does nothing",
+  name: "OpenSearchRelay - eventBatch with empty array does nothing",
   sanitizeResources: false,
   sanitizeOps: false,
   async fn() {
@@ -474,31 +602,37 @@ Deno.test({
 });
 
 Deno.test({
-  name: "ClickhouseRelay - relay source is stored",
+  name: "OpenSearchRelay - events sorted by created_at desc",
   sanitizeResources: false,
   sanitizeOps: false,
   async fn() {
-    const config = new Config(Deno.env);
-    const clickhouse = createClient({ url: config.databaseUrl });
+    await using relay = await setupRelay();
 
-    const relay = new ClickhouseRelay(clickhouse, {
-      relaySource: "wss://custom-relay.example.com",
+    const now = Math.floor(Date.now() / 1000);
+
+    const event1 = genEvent({ kind: 1, content: "Old", created_at: now - 100 });
+    const event2 = genEvent({
+      kind: 1,
+      content: "Middle",
+      created_at: now - 50,
     });
+    const event3 = genEvent({ kind: 1, content: "New", created_at: now });
 
-    await relay.migrate();
-    await clickhouse.command({ query: "TRUNCATE TABLE events_local" });
+    await relay.eventBatch([event1, event2, event3]);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
 
-    const event = genEvent({ kind: 1, content: "Test event" });
-    await relay.event(event);
+    const events = await relay.query([{ kinds: [1] }]);
 
-    // Verify relay_source is stored
-    const result = await clickhouse.query({
-      query: "SELECT relay_source FROM events_local WHERE id = {id:String}",
-      query_params: { id: event.id },
-      format: "JSONEachRow",
-    });
-
-    const data = await result.json<{ relay_source: string }>();
-    assertEquals(data[0].relay_source, "wss://custom-relay.example.com");
+    assertEquals(events.length, 3);
+    assertEquals(
+      events[0].created_at >= events[1].created_at,
+      true,
+      "Events should be sorted newest first",
+    );
+    assertEquals(
+      events[1].created_at >= events[2].created_at,
+      true,
+      "Events should be sorted newest first",
+    );
   },
 });

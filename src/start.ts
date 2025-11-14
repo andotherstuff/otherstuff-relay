@@ -1,22 +1,40 @@
 /**
  * Process manager to run server and workers together
  */
-import { createClient } from "@clickhouse/client-web";
+import { Client } from "@opensearch-project/opensearch";
 import { Config } from "./config.ts";
-import { ClickhouseRelay } from "./clickhouse.ts";
+import { OpenSearchRelay } from "./opensearch.ts";
 
 const processes: Deno.ChildProcess[] = [];
 
 // Instantiate config with Deno.env
 const config = new Config(Deno.env);
 
-// Now connect to the specific database
-const clickhouse = createClient({
-  url: config.databaseUrl,
-});
+// OpenSearch client
+interface OpenSearchConfig {
+  node: string;
+  auth?: {
+    username: string;
+    password: string;
+  };
+}
 
-// Initialize ClickhouseRelay
-const relay = new ClickhouseRelay(clickhouse);
+const opensearchConfig: OpenSearchConfig = {
+  node: config.opensearchUrl,
+};
+
+// Add authentication if provided
+if (config.opensearchUsername && config.opensearchPassword) {
+  opensearchConfig.auth = {
+    username: config.opensearchUsername,
+    password: config.opensearchPassword,
+  };
+}
+
+const opensearch = new Client(opensearchConfig);
+
+// Initialize OpenSearchRelay
+const relay = new OpenSearchRelay(opensearch);
 await relay.migrate();
 
 // Number of worker processes to run
@@ -41,7 +59,7 @@ for (let i = 0; i < NUM_RELAY_WORKERS; i++) {
   console.log(`✅ Relay worker ${i + 1} started (PID: ${worker.pid})`);
 }
 
-// Start storage workers (handle batch inserts to ClickHouse)
+// Start storage workers (handle batch inserts to OpenSearch)
 for (let i = 0; i < NUM_STORAGE_WORKERS; i++) {
   const worker = new Deno.Command("deno", {
     args: ["task", "storage-worker"],

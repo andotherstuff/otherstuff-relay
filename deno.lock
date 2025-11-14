@@ -7,7 +7,7 @@
     "jsr:@std/assert@^1.0.15": "1.0.15",
     "jsr:@std/encoding@~0.224.1": "0.224.3",
     "jsr:@std/internal@^1.0.12": "1.0.12",
-    "npm:@clickhouse/client-web@^1.12.1": "1.12.1",
+    "npm:@opensearch-project/opensearch@^3.5.1": "3.5.1",
     "npm:hono@^4.10.3": "4.10.3",
     "npm:lru-cache@^10.2.0": "10.4.3",
     "npm:nostr-tools@^2.13.0": "2.16.2",
@@ -52,15 +52,6 @@
     }
   },
   "npm": {
-    "@clickhouse/client-common@1.12.1": {
-      "integrity": "sha512-ccw1N6hB4+MyaAHIaWBwGZ6O2GgMlO99FlMj0B0UEGfjxM9v5dYVYql6FpP19rMwrVAroYs/IgX2vyZEBvzQLg=="
-    },
-    "@clickhouse/client-web@1.12.1": {
-      "integrity": "sha512-r4FbR0ShxwZ9lt2tE4uvL7Pu5y6jjoU0TX1DsKvhiERvfTIZeSWB1pwbu3hEHBNK9IzvArgAeA2gdVMiFxNArg==",
-      "dependencies": [
-        "@clickhouse/client-common"
-      ]
-    },
     "@noble/ciphers@0.5.3": {
       "integrity": "sha512-B0+6IIHiqEs3BPMT0hcRmHvEj2QHOLu+uwt+tqDDeVd0oyVzh7BPrDcPjRnV1PV/5LaknXJJQvOuRGR0zQJz+w=="
     },
@@ -81,6 +72,17 @@
     },
     "@noble/hashes@1.3.2": {
       "integrity": "sha512-MVC8EAQp7MvEcm30KWENFjgR+Mkmf+D189XJTkFIlwohU5hcBbn1ZkKq7KVTi2Hme3PMGF390DaL52beVrIihQ=="
+    },
+    "@opensearch-project/opensearch@3.5.1": {
+      "integrity": "sha512-6bf+HcuERzAtHZxrm6phjref54ABse39BpkDie/YO3AUFMCBrb3SK5okKSdT5n3+nDRuEEQLhQCl0RQV3s1qpA==",
+      "dependencies": [
+        "aws4",
+        "debug",
+        "hpagent",
+        "json11",
+        "ms",
+        "secure-json-parse"
+      ]
     },
     "@opentelemetry/api@1.9.0": {
       "integrity": "sha512-3giAOQvZiH5F9bMlMiv8+GSPMeqg0dbaeo58/0SlA9sxSqZhnUtxzX9/2FzyhS9sWQf5S0GJE0AKBrFqjpeYcg=="
@@ -133,17 +135,36 @@
         "@scure/base"
       ]
     },
+    "aws4@1.12.0": {
+      "integrity": "sha512-NmWvPnx0F1SfrQbYwOi7OeaNGokp9XhzNioJ/CSBs8Qa4vxug81mhJEAVZwxXuBmYB5KDRfMq/F3RR0BIU7sWg=="
+    },
     "bintrees@1.0.2": {
       "integrity": "sha512-VOMgTMwjAaUG580SXn3LacVgjurrbMme7ZZNYGSSV7mmtY6QQRh0Eg3pwIcntQ77DErK1L0NxkbetjcoXzVwKw=="
     },
     "cluster-key-slot@1.1.2": {
       "integrity": "sha512-RMr0FhtfXemyinomL4hrWcYJxmX6deFdCxpJzhDttxgO1+bcCnkk+9drydLVDmAMG7NE6aN/fl4F7ucU/90gAA=="
     },
+    "debug@4.4.1": {
+      "integrity": "sha512-KcKCqiftBJcZr++7ykoDIEwSa3XWowTfNPo92BYxjXiyYEVrUQh2aLyhxBCwww+heortUFxEJYcRzosstTEBYQ==",
+      "dependencies": [
+        "ms"
+      ]
+    },
     "hono@4.10.3": {
       "integrity": "sha512-2LOYWUbnhdxdL8MNbNg9XZig6k+cZXm5IjHn2Aviv7honhBMOHb+jxrKIeJRZJRmn+htUCKhaicxwXuUDlchRA=="
     },
+    "hpagent@1.2.0": {
+      "integrity": "sha512-A91dYTeIB6NoXG+PxTQpCCDDnfHsW9kc06Lvpu1TEe9gnd6ZFeiBoRO9JvzEv6xK7EX97/dUE8g/vBMTqTS3CA=="
+    },
+    "json11@2.0.2": {
+      "integrity": "sha512-HIrd50UPYmP6sqLuLbFVm75g16o0oZrVfxrsY0EEys22klz8mRoWlX9KAEDOSOR9Q34rcxsyC8oDveGrCz5uLQ==",
+      "bin": true
+    },
     "lru-cache@10.4.3": {
       "integrity": "sha512-JNAzZcXrCt42VGLuYz0zfAzDfAvJWW6AfYlDBQyDV5DClI2m5sAmK+OIO7s59XfsRsWHp02jAJrRadPRGTt6SQ=="
+    },
+    "ms@2.1.3": {
+      "integrity": "sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA=="
     },
     "nostr-tools@2.16.2": {
       "integrity": "sha512-ZxH9EbSt5ypURZj2TGNJxZd0Omb5ag5KZSu8IyJMCdLyg2KKz+2GA0sP/cSawCQEkyviIN4eRT4G2gB/t9lMRw==",
@@ -188,6 +209,9 @@
         "@redis/search",
         "@redis/time-series"
       ]
+    },
+    "secure-json-parse@2.7.0": {
+      "integrity": "sha512-6aU+Rwsezw7VR8/nyvKTx8QpWH9FrcYiXXlqC4z5d5XQBDRqtbfsRjnwGyqbi3gddNtWHuEk9OANUotL26qKUw=="
     },
     "tdigest@0.1.2": {
       "integrity": "sha512-+G0LLgjjo9BZX2MfdvPfH+MKLCrxlXSYec5DaPYP1fe6Iyhf0/fSmJ0bFiZ1F8BT6cGXl2LpltQptzjXKWEkKA==",
@@ -247,7 +271,7 @@
     "dependencies": [
       "jsr:@nostrify/nostrify@~0.46.5",
       "jsr:@std/assert@^1.0.15",
-      "npm:@clickhouse/client-web@^1.12.1",
+      "npm:@opensearch-project/opensearch@^3.5.1",
       "npm:hono@^4.10.3",
       "npm:nostr-tools@^2.17.1",
       "npm:nostr-wasm@0.1",
