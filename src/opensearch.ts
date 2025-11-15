@@ -269,11 +269,29 @@ export class OpenSearchRelay implements NRelay, AsyncDisposable {
   /**
    * Insert a single event into OpenSearch
    * Events are expected to be pre-validated
+   * Handles replaceable and addressable events correctly
    */
   async event(
     event: NostrEvent,
     opts?: { signal?: AbortSignal },
   ): Promise<void> {
+    // Check if a newer version already exists
+    if (this.isReplaceable(event.kind) || this.isAddressable(event.kind)) {
+      const hasNewer = await this.hasNewerReplaceableEvent(event);
+      if (hasNewer) {
+        console.log(
+          `⏭️  Skipping old replaceable/addressable event ${event.id} (newer version exists)`,
+        );
+        return;
+      }
+
+      // Delete old replaceable/addressable events
+      const deleted = await this.deleteOldReplaceableEvents([event]);
+      if (deleted > 0) {
+        console.log(`🗑️  Deleted ${deleted} old replaceable/addressable event(s)`);
+      }
+    }
+
     const doc = this.eventToDocument(event);
 
     await this.client.index({
@@ -287,9 +305,254 @@ export class OpenSearchRelay implements NRelay, AsyncDisposable {
   }
 
   /**
+   * Check if a kind is replaceable (10000 <= kind < 20000 or kind 0 or kind 3)
+   */
+  private isReplaceable(kind: number): boolean {
+    return (kind >= 10000 && kind < 20000) || kind === 0 || kind === 3;
+  }
+
+  /**
+   * Check if a kind is addressable (30000 <= kind < 40000)
+   */
+  private isAddressable(kind: number): boolean {
+    return kind >= 30000 && kind < 40000;
+  }
+
+  /**
+   * Get the d tag value from an event's tags
+   */
+  private getDTagValue(event: NostrEvent): string | undefined {
+    const dTag = event.tags.find((tag) => tag[0] === "d" && tag.length >= 2);
+    return dTag ? dTag[1] : undefined;
+  }
+
+  /**
+   * Check if a newer version of a replaceable/addressable event already exists
+   * Returns true if a newer event exists (meaning we should skip this event)
+   */
+  private async hasNewerReplaceableEvent(
+    event: NostrEvent,
+  ): Promise<boolean> {
+    let query: Record<string, unknown>;
+
+    if (this.isReplaceable(event.kind)) {
+      // For replaceable events, check for newer events with same pubkey + kind
+      query = {
+        bool: {
+          must: [
+            { term: { pubkey: event.pubkey } },
+            { term: { kind: event.kind } },
+            { range: { created_at: { gt: event.created_at } } },
+          ],
+        },
+      };
+    } else if (this.isAddressable(event.kind)) {
+      // For addressable events, check for newer events with same pubkey + kind + d tag
+      const dTagValue = this.getDTagValue(event);
+      if (dTagValue === undefined) {
+        return false; // No d tag, can't be addressable
+      }
+
+      query = {
+        bool: {
+          must: [
+            { term: { pubkey: event.pubkey } },
+            { term: { kind: event.kind } },
+            { term: { tag_d: dTagValue } },
+            { range: { created_at: { gt: event.created_at } } },
+          ],
+        },
+      };
+    } else {
+      return false; // Not a replaceable/addressable event
+    }
+
+    try {
+      const response = await this.client.count({
+        index: this.indexName,
+        body: { query },
+      });
+
+      return response.body.count > 0;
+    } catch (error) {
+      console.error("Failed to check for newer replaceable event:", error);
+      return false;
+    }
+  }
+
+  /**
+   * Delete old replaceable/addressable events that should be replaced
+   * Returns the number of events deleted
+   */
+  private async deleteOldReplaceableEvents(
+    events: NostrEvent[],
+  ): Promise<number> {
+    const deleteQueries: Array<Record<string, unknown>> = [];
+
+    for (const event of events) {
+      if (this.isReplaceable(event.kind)) {
+        // For replaceable events, delete older events with same pubkey + kind
+        deleteQueries.push({
+          bool: {
+            must: [
+              { term: { pubkey: event.pubkey } },
+              { term: { kind: event.kind } },
+              { range: { created_at: { lt: event.created_at } } },
+            ],
+          },
+        });
+      } else if (this.isAddressable(event.kind)) {
+        // For addressable events, delete older events with same pubkey + kind + d tag
+        const dTagValue = this.getDTagValue(event);
+        if (dTagValue !== undefined) {
+          deleteQueries.push({
+            bool: {
+              must: [
+                { term: { pubkey: event.pubkey } },
+                { term: { kind: event.kind } },
+                { term: { tag_d: dTagValue } },
+                { range: { created_at: { lt: event.created_at } } },
+              ],
+            },
+          });
+        }
+      }
+    }
+
+    if (deleteQueries.length === 0) {
+      return 0;
+    }
+
+    try {
+      // Delete all matching old events in one request
+      const response = await this.client.deleteByQuery({
+        index: this.indexName,
+        body: {
+          query: {
+            bool: {
+              should: deleteQueries,
+              minimum_should_match: 1,
+            },
+          },
+        },
+        refresh: false,
+      });
+
+      // The response body can be either a normal response or a task response
+      // Check if it's a normal response with deleted count
+      const body = response.body as { deleted?: number; task?: string };
+      return body.deleted || 0;
+    } catch (error) {
+      console.error("Failed to delete old replaceable events:", error);
+      return 0;
+    }
+  }
+
+  /**
+   * Batch check if newer versions of replaceable/addressable events exist
+   * Returns a Set of event IDs that should be skipped
+   */
+  private async batchCheckNewerReplaceableEvents(
+    events: NostrEvent[],
+  ): Promise<Set<string>> {
+    if (events.length === 0) return new Set();
+
+    // Build queries to check for newer events
+    const queries: Array<Record<string, unknown>> = [];
+
+    for (const event of events) {
+      if (this.isReplaceable(event.kind)) {
+        queries.push({
+          bool: {
+            must: [
+              { term: { pubkey: event.pubkey } },
+              { term: { kind: event.kind } },
+              { range: { created_at: { gt: event.created_at } } },
+            ],
+          },
+        });
+      } else if (this.isAddressable(event.kind)) {
+        const dTagValue = this.getDTagValue(event);
+        if (dTagValue !== undefined) {
+          queries.push({
+            bool: {
+              must: [
+                { term: { pubkey: event.pubkey } },
+                { term: { kind: event.kind } },
+                { term: { tag_d: dTagValue } },
+                { range: { created_at: { gt: event.created_at } } },
+              ],
+            },
+          });
+        }
+      }
+    }
+
+    if (queries.length === 0) return new Set();
+
+    try {
+      // Search for any events matching the queries
+      const response = await this.client.search({
+        index: this.indexName,
+        body: {
+          query: {
+            bool: {
+              should: queries,
+              minimum_should_match: 1,
+            },
+          },
+          size: 1000, // Should be enough for batch checking
+          _source: ["pubkey", "kind", "tag_d", "created_at"],
+        },
+      });
+
+      // Build a set of event IDs to skip by matching against our incoming events
+      const toSkip = new Set<string>();
+      const hits = response.body.hits.hits;
+
+      for (const event of events) {
+        for (const hit of hits) {
+          const doc = hit._source as {
+            pubkey: string;
+            kind: number;
+            tag_d?: string[];
+            created_at: number;
+          };
+
+          // Check if this hit matches the event and is newer
+          if (doc.created_at > event.created_at) {
+            if (this.isReplaceable(event.kind)) {
+              if (doc.pubkey === event.pubkey && doc.kind === event.kind) {
+                toSkip.add(event.id);
+                break;
+              }
+            } else if (this.isAddressable(event.kind)) {
+              const dTagValue = this.getDTagValue(event);
+              if (
+                doc.pubkey === event.pubkey &&
+                doc.kind === event.kind &&
+                doc.tag_d?.[0] === dTagValue
+              ) {
+                toSkip.add(event.id);
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      return toSkip;
+    } catch (error) {
+      console.error("Failed to batch check for newer replaceable events:", error);
+      return new Set();
+    }
+  }
+
+  /**
    * Insert a batch of events into OpenSearch using bulk API
    * Events are expected to be pre-validated
    * This is highly optimized for throughput
+   * Handles replaceable and addressable events correctly
    */
   async eventBatch(
     events: NostrEvent[],
@@ -297,10 +560,38 @@ export class OpenSearchRelay implements NRelay, AsyncDisposable {
   ): Promise<void> {
     if (events.length === 0) return;
 
+    // Filter out events that are older than existing replaceable/addressable events
+    const replaceableEvents = events.filter(
+      (e) => this.isReplaceable(e.kind) || this.isAddressable(e.kind),
+    );
+
+    // Batch check for newer versions
+    const toSkip = await this.batchCheckNewerReplaceableEvents(replaceableEvents);
+
+    // Filter out events to skip
+    const eventsToInsert = events.filter((e) => !toSkip.has(e.id));
+
+    if (toSkip.size > 0) {
+      console.log(
+        `⏭️  Skipping ${toSkip.size} old replaceable/addressable events (newer versions exist)`,
+      );
+    }
+
+    if (eventsToInsert.length === 0) {
+      console.log("⏭️  All events were skipped (older versions)");
+      return;
+    }
+
+    // Delete old replaceable/addressable events that will be replaced
+    const deleted = await this.deleteOldReplaceableEvents(eventsToInsert);
+    if (deleted > 0) {
+      console.log(`🗑️  Deleted ${deleted} old replaceable/addressable events`);
+    }
+
     // Build bulk request body
     const body: Array<Record<string, unknown> | NostrEventDocument> = [];
 
-    for (const event of events) {
+    for (const event of eventsToInsert) {
       const doc = this.eventToDocument(event);
 
       // Index operation (upsert)

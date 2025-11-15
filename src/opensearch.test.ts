@@ -634,3 +634,222 @@ Deno.test({
     );
   },
 });
+
+Deno.test({
+  name: "OpenSearchRelay - replaceable events (kind 0) replace older ones",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  async fn() {
+    await using relay = await setupRelay();
+
+    const sk = generateSecretKey();
+    const pubkey = getPublicKey(sk);
+    const now = Math.floor(Date.now() / 1000);
+
+    // Insert old metadata event
+    const oldEvent = genEvent({
+      kind: 0,
+      content: JSON.stringify({ name: "Old Name" }),
+      created_at: now - 100,
+    }, sk);
+
+    await relay.event(oldEvent);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    // Verify old event exists
+    let events = await relay.query([{ kinds: [0], authors: [pubkey] }]);
+    assertEquals(events.length, 1, "Should have one metadata event");
+    assertEquals(events[0].id, oldEvent.id);
+
+    // Insert new metadata event (should replace old one)
+    const newEvent = genEvent({
+      kind: 0,
+      content: JSON.stringify({ name: "New Name" }),
+      created_at: now,
+    }, sk);
+
+    await relay.event(newEvent);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    // Verify only new event exists
+    events = await relay.query([{ kinds: [0], authors: [pubkey] }]);
+    assertEquals(events.length, 1, "Should still have one metadata event");
+    assertEquals(events[0].id, newEvent.id, "Should be the newer event");
+    assertEquals(
+      events[0].content,
+      JSON.stringify({ name: "New Name" }),
+    );
+  },
+});
+
+Deno.test({
+  name: "OpenSearchRelay - addressable events (kind 30000+) replace by d tag",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  async fn() {
+    await using relay = await setupRelay();
+
+    const sk = generateSecretKey();
+    const pubkey = getPublicKey(sk);
+    const now = Math.floor(Date.now() / 1000);
+
+    // Insert old addressable event with d tag "test"
+    const oldEvent = genEvent({
+      kind: 30023,
+      content: "Old article content",
+      created_at: now - 100,
+      tags: [["d", "test-article"]],
+    }, sk);
+
+    await relay.event(oldEvent);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    // Verify old event exists
+    let events = await relay.query([{
+      kinds: [30023],
+      authors: [pubkey],
+      "#d": ["test-article"],
+    }]);
+    assertEquals(events.length, 1, "Should have one article");
+    assertEquals(events[0].id, oldEvent.id);
+
+    // Insert new addressable event with same d tag (should replace)
+    const newEvent = genEvent({
+      kind: 30023,
+      content: "New article content",
+      created_at: now,
+      tags: [["d", "test-article"]],
+    }, sk);
+
+    await relay.event(newEvent);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    // Verify only new event exists
+    events = await relay.query([{
+      kinds: [30023],
+      authors: [pubkey],
+      "#d": ["test-article"],
+    }]);
+    assertEquals(events.length, 1, "Should still have one article");
+    assertEquals(events[0].id, newEvent.id, "Should be the newer event");
+    assertEquals(events[0].content, "New article content");
+  },
+});
+
+Deno.test({
+  name: "OpenSearchRelay - addressable events with different d tags coexist",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  async fn() {
+    await using relay = await setupRelay();
+
+    const sk = generateSecretKey();
+    const pubkey = getPublicKey(sk);
+    const now = Math.floor(Date.now() / 1000);
+
+    // Insert two addressable events with different d tags
+    const event1 = genEvent({
+      kind: 30023,
+      content: "Article 1",
+      created_at: now,
+      tags: [["d", "article-1"]],
+    }, sk);
+
+    const event2 = genEvent({
+      kind: 30023,
+      content: "Article 2",
+      created_at: now,
+      tags: [["d", "article-2"]],
+    }, sk);
+
+    await relay.eventBatch([event1, event2]);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    // Both events should exist
+    const events = await relay.query([{ kinds: [30023], authors: [pubkey] }]);
+    assertEquals(events.length, 2, "Should have two articles");
+  },
+});
+
+Deno.test({
+  name: "OpenSearchRelay - replaceable events from different authors coexist",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  async fn() {
+    await using relay = await setupRelay();
+
+    const sk1 = generateSecretKey();
+    const sk2 = generateSecretKey();
+    const pubkey1 = getPublicKey(sk1);
+    const pubkey2 = getPublicKey(sk2);
+    const now = Math.floor(Date.now() / 1000);
+
+    // Insert metadata from two different authors
+    const event1 = genEvent({
+      kind: 0,
+      content: JSON.stringify({ name: "Author 1" }),
+      created_at: now,
+    }, sk1);
+
+    const event2 = genEvent({
+      kind: 0,
+      content: JSON.stringify({ name: "Author 2" }),
+      created_at: now,
+    }, sk2);
+
+    await relay.eventBatch([event1, event2]);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    // Both events should exist
+    const events = await relay.query([{ kinds: [0] }]);
+    assertEquals(events.length, 2, "Should have two metadata events");
+
+    // Each author should have their own metadata
+    const author1Events = events.filter((e) => e.pubkey === pubkey1);
+    const author2Events = events.filter((e) => e.pubkey === pubkey2);
+    assertEquals(author1Events.length, 1);
+    assertEquals(author2Events.length, 1);
+  },
+});
+
+Deno.test({
+  name: "OpenSearchRelay - old replaceable event is skipped when newer exists",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  async fn() {
+    await using relay = await setupRelay();
+
+    const sk = generateSecretKey();
+    const pubkey = getPublicKey(sk);
+    const now = Math.floor(Date.now() / 1000);
+
+    // Insert new metadata event first
+    const newEvent = genEvent({
+      kind: 0,
+      content: JSON.stringify({ name: "New Name" }),
+      created_at: now,
+    }, sk);
+
+    await relay.event(newEvent);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    // Insert old metadata event (should be skipped)
+    const oldEvent = genEvent({
+      kind: 0,
+      content: JSON.stringify({ name: "Old Name" }),
+      created_at: now - 100,
+    }, sk);
+
+    await relay.event(oldEvent);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    // Verify only new event exists (old event should be skipped)
+    const events = await relay.query([{ kinds: [0], authors: [pubkey] }]);
+    assertEquals(events.length, 1, "Should have only one metadata event");
+    assertEquals(events[0].id, newEvent.id, "Should be the newer event");
+    assertEquals(
+      events[0].content,
+      JSON.stringify({ name: "New Name" }),
+    );
+  },
+});
