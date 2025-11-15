@@ -7,7 +7,12 @@ import { generateSecretKey, getPublicKey } from "nostr-tools";
 import type { NostrEvent } from "@nostrify/nostrify";
 
 // Setup and teardown
-async function setupRelay(): Promise<OpenSearchRelay> {
+async function setupRelay(): Promise<
+  OpenSearchRelay & AsyncDisposable & {
+    testIndexName: string;
+    opensearchClient: Client;
+  }
+> {
   const config = new Config(Deno.env);
 
   interface OpenSearchConfig {
@@ -31,27 +36,30 @@ async function setupRelay(): Promise<OpenSearchRelay> {
 
   const opensearch = new Client(opensearchConfig);
 
-  const relay = new OpenSearchRelay(opensearch);
+  // Use a unique index name for each test to avoid interference
+  const testIndexName = `nostr-events-test-${crypto.randomUUID()}`;
+  const relay = new OpenSearchRelay(opensearch, testIndexName);
 
   // Run migrations to ensure index exists
   await relay.migrate();
 
-  // Clean up test data
-  try {
-    await opensearch.deleteByQuery({
-      index: "nostr-events",
-      body: {
-        query: {
-          match_all: {},
-        },
-      },
-      refresh: true,
-    });
-  } catch {
-    // Index might not exist yet
-  }
+  // Add cleanup method and custom disposal
+  const cleanup = async () => {
+    try {
+      await opensearch.indices.delete({ index: testIndexName });
+    } catch {
+      // Index might not exist
+    }
+    await relay.close();
+  };
 
-  return relay;
+  return Object.assign(relay, {
+    testIndexName,
+    opensearchClient: opensearch,
+    async [Symbol.asyncDispose]() {
+      await cleanup();
+    },
+  });
 }
 
 Deno.test({
@@ -100,7 +108,7 @@ Deno.test({
     await relay.event(testEvent);
 
     // Wait for index refresh
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await relay.refresh(); // Force refresh for testing
 
     // Query to verify insertion
     const events = await relay.query([{ ids: [testEvent.id] }]);
@@ -130,7 +138,7 @@ Deno.test({
     await relay.eventBatch(events);
 
     // Wait for index refresh
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await relay.refresh(); // Force refresh for testing
 
     // Query all events
     const queriedEvents = await relay.query([{ kinds: [1], limit: 10 }]);
@@ -151,7 +159,7 @@ Deno.test({
     const event3 = genEvent({ kind: 1, content: "Event 3" });
 
     await relay.eventBatch([event1, event2, event3]);
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await relay.refresh(); // Force refresh for testing
 
     // Query specific events by ID
     const events = await relay.query([{ ids: [event1.id, event3.id] }]);
@@ -181,7 +189,7 @@ Deno.test({
     const event3 = genEvent({ kind: 1, content: "Event from author 2" }, sk2);
 
     await relay.eventBatch([event1, event2, event3]);
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await relay.refresh(); // Force refresh for testing
 
     // Query events by specific author
     const events = await relay.query([{ authors: [pubkey1] }]);
@@ -206,7 +214,7 @@ Deno.test({
     const event4 = genEvent({ kind: 1, content: "Another text note" });
 
     await relay.eventBatch([event1, event2, event3, event4]);
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await relay.refresh(); // Force refresh for testing
 
     // Query only kind 1 events
     const events = await relay.query([{ kinds: [1] }]);
@@ -242,7 +250,7 @@ Deno.test({
     const event3 = genEvent({ kind: 1, content: "Now", created_at: now });
 
     await relay.eventBatch([event1, event2, event3]);
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await relay.refresh(); // Force refresh for testing
 
     // Query events since one hour ago
     const recentEvents = await relay.query([{ since: hourAgo - 10 }]);
@@ -274,7 +282,7 @@ Deno.test({
     );
 
     await relay.eventBatch(events);
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await relay.refresh(); // Force refresh for testing
 
     // Query with limit
     const limitedEvents = await relay.query([{ kinds: [1], limit: 5 }]);
@@ -315,7 +323,7 @@ Deno.test({
     }, sk);
 
     await relay.eventBatch([event1, event2, event3, event4]);
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await relay.refresh(); // Force refresh for testing
 
     // Query events with specific e tag
     const eTagEvents = await relay.query([{ "#e": ["event123"] }]);
@@ -354,7 +362,7 @@ Deno.test({
     }, sk);
 
     await relay.eventBatch([event1, event2, event3]);
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await relay.refresh(); // Force refresh for testing
 
     // Query events with custom tag
     const customTagEvents = await relay.query([{ "#custom": ["value1"] }]);
@@ -398,7 +406,7 @@ Deno.test({
     });
 
     await relay.eventBatch([event1, event2, event3]);
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await relay.refresh(); // Force refresh for testing
 
     // Search for "bitcoin"
     const bitcoinEvents = await relay.query([{ search: "bitcoin" }]);
@@ -431,7 +439,7 @@ Deno.test({
     const event3 = genEvent({ kind: 1, content: "Kind 1 from author 2" }, sk2);
 
     await relay.eventBatch([event1, event2, event3]);
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await relay.refresh(); // Force refresh for testing
 
     // Query with multiple filters (should OR them)
     const events = await relay.query([
@@ -460,7 +468,7 @@ Deno.test({
     );
 
     await relay.eventBatch(events);
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await relay.refresh(); // Force refresh for testing
 
     // Count all kind 1 events
     const result = await relay.count([{ kinds: [1] }]);
@@ -480,7 +488,7 @@ Deno.test({
     const event2 = genEvent({ kind: 1, content: "Event 2" });
 
     await relay.eventBatch([event1, event2]);
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await relay.refresh(); // Force refresh for testing
 
     // Stream events
     const messages: Array<["EVENT" | "EOSE", string, NostrEvent?]> = [];
@@ -506,7 +514,7 @@ Deno.test({
 
     const event = genEvent({ kind: 1, content: "Test event" });
     await relay.event(event);
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await relay.refresh(); // Force refresh for testing
 
     // Query with limit 0 (realtime-only subscription)
     const events = await relay.query([{ kinds: [1], limit: 0 }]);
@@ -528,7 +536,7 @@ Deno.test({
     // Insert the same event twice
     await relay.event(event);
     await relay.event(event);
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await relay.refresh(); // Force refresh for testing
 
     // Query should return only one event (same ID overwrites)
     const events = await relay.query([{ ids: [event.id] }]);
@@ -569,7 +577,7 @@ Deno.test({
     }, sk);
 
     await relay.eventBatch([event1, event2, event3]);
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await relay.refresh(); // Force refresh for testing
 
     // Query with multiple conditions
     const events = await relay.query([{
@@ -617,7 +625,7 @@ Deno.test({
     const event3 = genEvent({ kind: 1, content: "New", created_at: now });
 
     await relay.eventBatch([event1, event2, event3]);
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await relay.refresh(); // Force refresh for testing
 
     const events = await relay.query([{ kinds: [1] }]);
 
@@ -661,7 +669,7 @@ Deno.test({
 
     // Insert older event first
     await relay.event(olderEvent);
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await relay.refresh(); // Force refresh for testing
 
     // Verify older event is stored
     let events = await relay.query([{ kinds: [0], authors: [pubkey] }]);
@@ -670,7 +678,7 @@ Deno.test({
 
     // Insert newer event
     await relay.event(newerEvent);
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await relay.refresh(); // Force refresh for testing
 
     // Query should return only the newer event
     events = await relay.query([{ kinds: [0], authors: [pubkey] }]);
@@ -685,8 +693,7 @@ Deno.test({
 });
 
 Deno.test({
-  name:
-    "OpenSearchRelay - replaceable events don't replace if older timestamp",
+  name: "OpenSearchRelay - replaceable events don't replace if older timestamp",
   sanitizeResources: false,
   sanitizeOps: false,
   async fn() {
@@ -711,11 +718,11 @@ Deno.test({
 
     // Insert newer event first
     await relay.event(newerEvent);
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await relay.refresh(); // Force refresh for testing
 
     // Insert older event (should be rejected)
     await relay.event(olderEvent);
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await relay.refresh(); // Force refresh for testing
 
     // Query should return only the newer event
     const events = await relay.query([{ kinds: [0], authors: [pubkey] }]);
@@ -760,7 +767,7 @@ Deno.test({
 
     // Insert all events
     await relay.eventBatch([olderArticle, newerArticle, differentArticle]);
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await relay.refresh(); // Force refresh for testing
 
     // Query should return only the newer version of "my-article" and the other article
     const events = await relay.query([{ kinds: [30023], authors: [pubkey] }]);
@@ -811,7 +818,7 @@ Deno.test({
     }, sk);
 
     await relay.eventBatch([emptyDTag, noDTag]);
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await relay.refresh(); // Force refresh for testing
 
     // Both should be treated as having d="" and only the newer one should exist
     const events = await relay.query([{ kinds: [30023], authors: [pubkey] }]);
@@ -854,11 +861,11 @@ Deno.test({
 
     // Insert higher ID first
     await relay.event(higherIdEvent);
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await relay.refresh(); // Force refresh for testing
 
     // Insert lower ID (should replace)
     await relay.event(lowerIdEvent);
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await relay.refresh(); // Force refresh for testing
 
     // Query should return the event with lower ID
     const events = await relay.query([{ kinds: [0] }]);
@@ -904,7 +911,7 @@ Deno.test({
 
     // Insert all at once
     await relay.eventBatch(events);
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await relay.refresh(); // Force refresh for testing
 
     // Should only have the newest version
     const storedEvents = await relay.query([{ kinds: [0], authors: [pubkey] }]);
@@ -947,7 +954,7 @@ Deno.test({
     }, sk);
 
     await relay.eventBatch([event1, event2]);
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await relay.refresh(); // Force refresh for testing
 
     // Both events should be stored
     const events = await relay.query([{ kinds: [1], authors: [pubkey] }]);
