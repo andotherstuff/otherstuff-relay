@@ -87,9 +87,9 @@ export class OpenSearchRelay implements NRelay, AsyncDisposable {
   private getDocumentId(event: NostrEvent): string {
     if (isAddressableEvent(event.kind)) {
       const dTag = this.getTagValue(event.tags, "d");
-      return `${event.pubkey}:${event.kind}:${dTag}`;
+      return `${event.kind}:${event.pubkey}:${dTag}`;
     } else if (isReplaceableEvent(event.kind)) {
-      return `${event.pubkey}:${event.kind}`;
+      return `${event.kind}:${event.pubkey}:`;
     } else {
       // Regular and ephemeral events use their event ID
       return event.id;
