@@ -31,9 +31,7 @@ async function setupRelay(): Promise<OpenSearchRelay> {
 
   const opensearch = new Client(opensearchConfig);
 
-  const relay = new OpenSearchRelay(opensearch, {
-    relaySource: "wss://test-relay.example.com",
-  });
+  const relay = new OpenSearchRelay(opensearch);
 
   // Run migrations to ensure index exists
   await relay.migrate();

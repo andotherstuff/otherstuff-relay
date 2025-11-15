@@ -174,7 +174,9 @@ export class RedisMetrics {
   }
 
   async getResponsePollerInvocations(): Promise<number> {
-    const value = await this.redis.get(METRICS_KEYS.response_poller_invocations);
+    const value = await this.redis.get(
+      METRICS_KEYS.response_poller_invocations,
+    );
     return value ? parseInt(value, 10) : 0;
   }
 
@@ -210,7 +212,7 @@ export class RedisMetrics {
 
     const metrics: Record<string, number> = {};
     let valueIndex = 0;
-    
+
     for (const [key, redisKey] of Object.entries(METRICS_KEYS)) {
       if (redisKey !== METRICS_KEYS.events_by_kind) {
         metrics[key] = values[valueIndex]

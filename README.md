@@ -1,13 +1,14 @@
 # Otherstuff Relay
 
 A high-performance Nostr relay server built with Deno and OpenSearch, optimized
-for high-throughput event processing, real-time data delivery, and full-text search.
+for high-throughput event processing, real-time data delivery, and full-text
+search.
 
 ## Overview
 
-This relay server combines the lightweight efficiency of Deno with the
-search power of OpenSearch/ElasticSearch to deliver a scalable Nostr infrastructure
-solution with native NIP-50 full-text search support. The architecture prioritizes 
+This relay server combines the lightweight efficiency of Deno with the search
+power of OpenSearch to deliver a scalable Nostr infrastructure solution with
+native NIP-50 full-text search support. The architecture prioritizes
 performance, reliability, and operational simplicity.
 
 ## Architecture
@@ -77,10 +78,12 @@ This architecture solves the validation bottleneck by:
   overhead
 - **Optimized Queries**: OpenSearch provides sub-millisecond queries with proper
   indexing
-- **Full-Text Search**: Native NIP-50 support with relevance scoring and fuzzy matching
+- **Full-Text Search**: Native NIP-50 support with relevance scoring and fuzzy
+  matching
 - **Comprehensive Tag Indexing**: All tags indexed for fast filtering, including
   multi-letter tags
-- **Bulk Insert**: Storage workers use OpenSearch bulk API for high-throughput writes
+- **Bulk Insert**: Storage workers use OpenSearch bulk API for high-throughput
+  writes
 - **Event Age Filtering**: Configurable age-based filtering prevents
   broadcasting of stale events to subscribers, with special handling for
   ephemeral events
@@ -106,7 +109,7 @@ This architecture solves the validation bottleneck by:
 ### Prerequisites
 
 - **Deno** 1.40 or later
-- **OpenSearch** or **ElasticSearch** server (local or remote)
+- **OpenSearch** server (local or remote)
 - **Redis** server (local or remote)
 
 ### Installation
@@ -115,7 +118,7 @@ Clone the repository and navigate to the project directory:
 
 ```bash
 git clone <repository-url>
-cd nostr-relay-clickhouse
+cd otherstuff-relay
 ```
 
 ### Configuration
@@ -137,7 +140,7 @@ PORT=8000                                    # HTTP server port
 #### Database Configuration
 
 ```bash
-# OpenSearch/ElasticSearch connection URL
+# OpenSearch connection URL
 # Format: http://[host]:[port] or https://[host]:[port]
 OPENSEARCH_URL=http://localhost:9200
 
@@ -145,13 +148,10 @@ OPENSEARCH_URL=http://localhost:9200
 # OPENSEARCH_URL=http://localhost:9200
 # OPENSEARCH_URL=https://opensearch.example.com:9200
 
-# OpenSearch/ElasticSearch authentication (optional)
+# OpenSearch authentication (optional)
 # Leave blank if no authentication is required
 OPENSEARCH_USERNAME=
 OPENSEARCH_PASSWORD=
-
-# Optional: Source relay identifier for tracking event origins
-RELAY_SOURCE=wss://your-relay-domain.com
 ```
 
 #### Redis Configuration
@@ -187,6 +187,7 @@ deno task migrate
 ```
 
 This creates the `nostr-events` index with optimized mappings for:
+
 - Fast tag filtering (all tags indexed)
 - Full-text search on content (NIP-50)
 - Time-based queries
@@ -251,6 +252,7 @@ tag indexing and full-text search:
 The `nostr-events` index includes:
 
 **Core Fields:**
+
 - `id` (keyword) - Event ID, used as document ID
 - `pubkey` (keyword) - Author's public key
 - `created_at` (long) - Unix timestamp
@@ -260,6 +262,7 @@ The `nostr-events` index includes:
 - `tags` (keyword array) - Original tag structure
 
 **Optimized Tag Fields:**
+
 - `tag_e` (keyword array) - Event references
 - `tag_p` (keyword array) - Pubkey references
 - `tag_a` (keyword array) - Address references
@@ -269,11 +272,12 @@ The `nostr-events` index includes:
 - `tag_g` (keyword array) - Geohash tags
 
 **Generic Tag Storage:**
+
 - `tags_flat` (nested) - All other tags indexed as `{name, value}` pairs
 
 **Metadata:**
+
 - `indexed_at` (long) - Indexing timestamp
-- `relay_source` (keyword) - Source relay URL
 
 ### Query Performance
 
@@ -322,14 +326,16 @@ The index is automatically created by running `deno task migrate`.
 - **CPU Utilization**: Distributed across relay workers for parallel validation
 - **Database Connections**: Pooled connections per storage worker
 - **Queue Latency**: < 1ms for message queueing, ~10ms for response delivery
-- **Index Refresh**: 5-second refresh interval balances write performance with search freshness
+- **Index Refresh**: 5-second refresh interval balances write performance with
+  search freshness
 
 ### Scalability
 
 - **Parallel Validation**: N relay workers process events concurrently
 - **Horizontal Scaling**: Multiple server instances + workers behind load
   balancer
-- **Database Scaling**: OpenSearch cluster support for high availability and sharding
+- **Database Scaling**: OpenSearch cluster support for high availability and
+  sharding
 - **Storage**: Time-based sharding available for efficient data management
 - **Tag Indexing**: All tags fully indexed for O(log n) lookups
 
@@ -383,7 +389,8 @@ CMD ["deno", "task", "start"]
 - **Logging**: Implement centralized log aggregation
 - **Backups**: Regular OpenSearch snapshots for disaster recovery
 - **Index Management**: Configure index lifecycle policies for data retention
-- **Security**: Enable OpenSearch security features and authentication in production
+- **Security**: Enable OpenSearch security features and authentication in
+  production
 
 ## License
 

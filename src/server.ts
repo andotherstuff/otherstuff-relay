@@ -6,13 +6,13 @@ import {
   getMetrics,
   getMetricsInstance,
   initializeMetrics,
+  messagesReceivedCounter,
+  messagesSentCounter,
   register,
-  webSocketOpensCounter,
+  responsePollerInvocationsCounter,
   webSocketClosesCounter,
   webSocketErrorsCounter,
-  messagesSentCounter,
-  messagesReceivedCounter,
-  responsePollerInvocationsCounter,
+  webSocketOpensCounter,
 } from "./metrics.ts";
 import type { NostrRelayMsg } from "@nostrify/nostrify";
 
@@ -161,7 +161,7 @@ app.get("/", (c) => {
         // Track message sent
         metrics.incrementMessagesSent();
         messagesSentCounter.inc();
-        
+
         socket.send(JSON.stringify(msg));
       }
     } catch (err) {

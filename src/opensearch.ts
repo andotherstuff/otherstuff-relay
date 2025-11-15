@@ -10,14 +10,6 @@ import type {
 } from "@nostrify/nostrify";
 
 /**
- * Options for OpenSearchRelay
- */
-export interface OpenSearchRelayOptions {
-  /** Relay source identifier for tracking event origins */
-  relaySource?: string;
-}
-
-/**
  * OpenSearch document structure for Nostr events
  */
 interface NostrEventDocument {
@@ -29,7 +21,6 @@ interface NostrEventDocument {
   sig: string;
   tags: string[][];
   indexed_at: number;
-  relay_source: string;
   // Flattened tag fields for fast filtering
   tag_e?: string[];
   tag_p?: string[];
@@ -48,14 +39,11 @@ interface NostrEventDocument {
  * Expects events to be pre-validated before insertion
  */
 export class OpenSearchRelay implements NRelay, AsyncDisposable {
-  private relaySource: string;
   private indexName: string;
 
   constructor(
     private client: Client,
-    options: OpenSearchRelayOptions = {},
   ) {
-    this.relaySource = options.relaySource ?? "";
     this.indexName = "nostr-events";
   }
 
@@ -81,7 +69,6 @@ export class OpenSearchRelay implements NRelay, AsyncDisposable {
       sig: event.sig,
       tags: event.tags,
       indexed_at: Math.floor(Date.now() / 1000),
-      relay_source: this.relaySource,
     };
 
     // Index common tags for fast filtering
@@ -245,7 +232,9 @@ export class OpenSearchRelay implements NRelay, AsyncDisposable {
     // For NIP-50 search queries, sort by relevance score first, then by created_at
     // For regular queries, sort by created_at only (newest first)
     const sort = filter.search
-      ? [{ _score: { order: "desc" as const } }, { created_at: { order: "desc" as const } }]
+      ? [{ _score: { order: "desc" as const } }, {
+        created_at: { order: "desc" as const },
+      }]
       : [{ created_at: { order: "desc" as const } }];
 
     try {
@@ -529,9 +518,6 @@ export class OpenSearchRelay implements NRelay, AsyncDisposable {
               },
               indexed_at: {
                 type: "long",
-              },
-              relay_source: {
-                type: "keyword",
               },
               // Optimized tag fields for common tags
               tag_e: {
