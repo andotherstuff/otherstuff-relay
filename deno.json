@@ -5,8 +5,7 @@
     "server": "deno serve -A --env-file src/server.ts",
     "relay-worker": "deno run -A --env-file src/relay-worker.ts",
     "storage-worker": "deno run -A --env-file src/storage-worker.ts",
-    "migrate": "deno run -A --env-file scripts/migrate.ts",
-    "trends": "deno run -A --env-file scripts/trends.ts"
+    "migrate": "deno run -A --env-file scripts/migrate.ts"
   },
   "imports": {
     "@nostrify/nostrify": "jsr:@nostrify/nostrify@^0.46.5",

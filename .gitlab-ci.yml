@@ -1,0 +1,38 @@
+image: denoland/deno:2.5.6
+
+default:
+  interruptible: true
+
+stages:
+  - test
+
+test:
+  stage: test
+  timeout: 2 minutes
+  variables:
+    OPENSEARCH_URL: "http://opensearch:9200"
+    REDIS_URL: "redis://redis:6379"
+  services:
+    - name: opensearchproject/opensearch:latest
+      alias: opensearch
+      variables:
+        discovery.type: single-node
+        DISABLE_SECURITY_PLUGIN: "true"
+        OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+    - name: redis:8-alpine
+      alias: redis
+  script:
+    - echo "Waiting for services to start..."
+    - sleep 5
+    - deno fmt --check
+    - deno lint
+    - deno check .
+    - deno task test --coverage=cov_profile
+    - deno coverage cov_profile
+  coverage: /All files[^\|]*\|[^\|]*\s+([\d\.]+)/
+  artifacts:
+    when: always
+    paths:
+      - deno-test.xml
+    reports:
+      junit: deno-test.xml
