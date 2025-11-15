@@ -68,6 +68,13 @@ This architecture solves the validation bottleneck by:
 
 ## Features
 
+### NIP Support
+
+- **NIP-01**: Basic protocol flow, event validation, and filtering
+- **NIP-09**: Event deletion requests (kind 5 events)
+- **NIP-50**: Full-text search with advanced sort modes (hot, top,
+  controversial, rising)
+
 ### Performance
 
 - **Intelligent Rate Limiting**: Per-connection limits prevent abuse while
@@ -90,6 +97,8 @@ This architecture solves the validation bottleneck by:
 - **Event Age Filtering**: Configurable age-based filtering prevents
   broadcasting of stale events to subscribers, with special handling for
   ephemeral events
+- **Event Deletion**: NIP-09 deletion requests processed automatically, with
+  pubkey verification and timestamp-based deletion for addressable events
 
 ### Reliability
 
@@ -376,6 +385,62 @@ The index is automatically created by running `deno task migrate`.
 - **Storage**: Time-based sharding available for efficient data management
 - **Tag Indexing**: All tags fully indexed for O(log n) lookups
 
+## NIP-09 Event Deletion
+
+This relay implements NIP-09 event deletion requests (kind 5 events). Deletion
+is handled automatically and transparently:
+
+### How It Works
+
+1. **Automatic Processing**: When a kind 5 deletion event is inserted, the relay
+   automatically deletes referenced events before storing the deletion event
+2. **Event References (`e` tags)**: Deletes all referenced events that have the
+   same pubkey as the deletion request
+3. **Addressable References (`a` tags)**: Deletes all versions of the
+   addressable event up to the deletion request's `created_at` timestamp
+4. **Pubkey Verification**: Only events with matching pubkeys are deleted
+   (authors can only delete their own events)
+5. **Deletion Events Preserved**: The deletion events themselves are stored and
+   broadcast indefinitely
+6. **Re-insertion Prevention**: Deleted events cannot be re-inserted - the relay
+   checks for deletion events before accepting any event
+
+### Example Deletion Event
+
+```json
+{
+  "kind": 5,
+  "pubkey": "<author-pubkey>",
+  "tags": [
+    ["e", "<event-id-to-delete>"],
+    ["e", "<another-event-id>"],
+    ["a", "30023:<author-pubkey>:my-article"],
+    ["k", "1"],
+    ["k", "30023"]
+  ],
+  "content": "these posts were published by accident"
+}
+```
+
+### API Methods
+
+**Automatic Deletion (Recommended)**:
+
+- Simply insert a kind 5 event using `event()` or `eventBatch()`
+- Deletions are processed automatically
+
+**Manual Deletion**:
+
+- Use `remove(filters)` to delete events matching specific filters
+- Useful for administrative cleanup or custom deletion logic
+
+### Important Notes
+
+- Deletion is not guaranteed across all relays - this is a best-effort mechanism
+- Clients may have already received and stored the deleted events
+- Deleted events are prevented from being re-inserted
+- The relay continues to broadcast deletion events to help propagate deletions
+
 ## NIP-50 Search Extensions
 
 This relay implements advanced NIP-50 search extensions for discovering trending
@@ -410,7 +475,7 @@ src/
 ├── server.ts         # HTTP server and WebSocket handling
 ├── relay-worker.ts   # Relay worker for parallel message processing & validation
 ├── storage-worker.ts # Storage worker for batch OpenSearch inserts
-├── opensearch.ts     # OpenSearch relay implementation with NIP-50 support
+├── opensearch.ts     # OpenSearch relay implementation with NIP-50 and NIP-09 support
 ├── start.ts          # Process manager to run all components
 ├── migrate.ts        # Database migration script
 ├── config.ts         # Environment configuration

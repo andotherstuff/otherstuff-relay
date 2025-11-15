@@ -1243,3 +1243,451 @@ Deno.test({
     assertEquals(Array.isArray(events), true, "Should return an array");
   },
 });
+
+Deno.test({
+  name: "OpenSearchRelay - NIP-09 deletion by event ID (e tag)",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  async fn() {
+    await using relay = await setupRelay();
+
+    const sk = generateSecretKey();
+    const pubkey = getPublicKey(sk);
+
+    // Create events to be deleted
+    const event1 = genEvent({ kind: 1, content: "Event to delete 1" }, sk);
+    const event2 = genEvent({ kind: 1, content: "Event to delete 2" }, sk);
+    const event3 = genEvent({ kind: 1, content: "Event to keep" }, sk);
+
+    await relay.eventBatch([event1, event2, event3]);
+    await relay.refresh(); // Force refresh for testing
+
+    // Verify all events are stored
+    let events = await relay.query([{ kinds: [1], authors: [pubkey] }]);
+    assertEquals(events.length, 3, "Should have three events");
+
+    // Create deletion event
+    const deletionEvent = genEvent({
+      kind: 5,
+      content: "Deleting some events",
+      tags: [
+        ["e", event1.id],
+        ["e", event2.id],
+      ],
+    }, sk);
+
+    // Process deletion by inserting the deletion event
+    await relay.event(deletionEvent);
+    await relay.refresh(); // Force refresh for testing
+
+    // Verify deleted events are gone
+    events = await relay.query([{ kinds: [1], authors: [pubkey] }]);
+    assertEquals(events.length, 1, "Should have one event left");
+    assertEquals(events[0].id, event3.id, "Should be the event we kept");
+  },
+});
+
+Deno.test({
+  name: "OpenSearchRelay - NIP-09 deletion only deletes same pubkey",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  async fn() {
+    await using relay = await setupRelay();
+
+    const sk1 = generateSecretKey();
+    const sk2 = generateSecretKey();
+    const pubkey1 = getPublicKey(sk1);
+    const pubkey2 = getPublicKey(sk2);
+
+    // Create events from different authors
+    const event1 = genEvent({ kind: 1, content: "From author 1" }, sk1);
+    const event2 = genEvent({ kind: 1, content: "From author 2" }, sk2);
+
+    await relay.eventBatch([event1, event2]);
+    await relay.refresh(); // Force refresh for testing
+
+    // Author 1 tries to delete both events (should only delete their own)
+    const deletionEvent = genEvent({
+      kind: 5,
+      content: "Trying to delete both",
+      tags: [
+        ["e", event1.id],
+        ["e", event2.id], // Different author - should NOT be deleted
+      ],
+    }, sk1);
+
+    await relay.event(deletionEvent);
+    await relay.refresh(); // Force refresh for testing
+
+    // Verify only event1 is deleted
+    const events1 = await relay.query([{ kinds: [1], authors: [pubkey1] }]);
+    assertEquals(events1.length, 0, "Author 1's event should be deleted");
+
+    const events2 = await relay.query([{ kinds: [1], authors: [pubkey2] }]);
+    assertEquals(events2.length, 1, "Author 2's event should remain");
+    assertEquals(events2[0].id, event2.id);
+  },
+});
+
+Deno.test({
+  name: "OpenSearchRelay - NIP-09 deletion by addressable event (a tag)",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  async fn() {
+    await using relay = await setupRelay();
+
+    const sk = generateSecretKey();
+    const pubkey = getPublicKey(sk);
+    const now = Math.floor(Date.now() / 1000);
+
+    // Create addressable event
+    const article = genEvent({
+      kind: 30023,
+      content: "My article",
+      created_at: now - 100,
+      tags: [["d", "my-article"]],
+    }, sk);
+
+    await relay.event(article);
+    await relay.refresh(); // Force refresh for testing
+
+    // Verify article is stored
+    let events = await relay.query([{ kinds: [30023], authors: [pubkey] }]);
+    assertEquals(events.length, 1, "Should have the article");
+
+    // Create deletion event with a tag
+    const deletionEvent = genEvent({
+      kind: 5,
+      content: "Deleting my article",
+      created_at: now,
+      tags: [["a", `30023:${pubkey}:my-article`]],
+    }, sk);
+
+    // Process deletion by inserting the deletion event
+    await relay.event(deletionEvent);
+    await relay.refresh(); // Force refresh for testing
+
+    // Verify article is deleted
+    events = await relay.query([{ kinds: [30023], authors: [pubkey] }]);
+    assertEquals(events.length, 0, "Article should be deleted");
+  },
+});
+
+Deno.test({
+  name:
+    "OpenSearchRelay - NIP-09 deletion by a tag only deletes versions up to deletion timestamp",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  async fn() {
+    await using relay = await setupRelay();
+
+    const sk = generateSecretKey();
+    const pubkey = getPublicKey(sk);
+    const now = Math.floor(Date.now() / 1000);
+
+    // Create old version of article
+    const oldArticle = genEvent({
+      kind: 30023,
+      content: "Old version",
+      created_at: now - 200,
+      tags: [["d", "my-article"]],
+    }, sk);
+
+    await relay.event(oldArticle);
+    await relay.refresh(); // Force refresh for testing
+
+    // Create deletion event
+    const deletionEvent = genEvent({
+      kind: 5,
+      content: "Deleting old article",
+      created_at: now - 100,
+      tags: [["a", `30023:${pubkey}:my-article`]],
+    }, sk);
+
+    await relay.event(deletionEvent);
+    await relay.refresh(); // Force refresh for testing
+
+    // Old article should be deleted
+    let events = await relay.query([{ kinds: [30023], authors: [pubkey] }]);
+    assertEquals(events.length, 0, "Old article should be deleted");
+
+    // Now create a newer version (after deletion timestamp)
+    const newArticle = genEvent({
+      kind: 30023,
+      content: "New version",
+      created_at: now,
+      tags: [["d", "my-article"]],
+    }, sk);
+
+    await relay.event(newArticle);
+    await relay.refresh(); // Force refresh for testing
+
+    // New article should NOT be deleted
+    events = await relay.query([{ kinds: [30023], authors: [pubkey] }]);
+    assertEquals(events.length, 1, "New article should remain");
+    assertEquals(events[0].id, newArticle.id);
+    assertEquals(events[0].content, "New version");
+  },
+});
+
+Deno.test({
+  name: "OpenSearchRelay - NIP-09 deletion event is stored",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  async fn() {
+    await using relay = await setupRelay();
+
+    const sk = generateSecretKey();
+    const pubkey = getPublicKey(sk);
+
+    // Create event to delete
+    const event = genEvent({ kind: 1, content: "To be deleted" }, sk);
+    await relay.event(event);
+    await relay.refresh(); // Force refresh for testing
+
+    // Create deletion event
+    const deletionEvent = genEvent({
+      kind: 5,
+      content: "Deleting my event",
+      tags: [["e", event.id]],
+    }, sk);
+
+    // Process and store deletion event (automatically processes deletion)
+    await relay.event(deletionEvent);
+    await relay.refresh(); // Force refresh for testing
+
+    // Verify deletion event is stored
+    const deletionEvents = await relay.query([{
+      kinds: [5],
+      authors: [pubkey],
+    }]);
+    assertEquals(deletionEvents.length, 1, "Deletion event should be stored");
+    assertEquals(deletionEvents[0].id, deletionEvent.id);
+  },
+});
+
+Deno.test({
+  name: "OpenSearchRelay - NIP-09 deletion with mixed e and a tags",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  async fn() {
+    await using relay = await setupRelay();
+
+    const sk = generateSecretKey();
+    const pubkey = getPublicKey(sk);
+    const now = Math.floor(Date.now() / 1000);
+
+    // Create regular event
+    const note = genEvent({ kind: 1, content: "Regular note" }, sk);
+
+    // Create addressable event
+    const article = genEvent({
+      kind: 30023,
+      content: "Article",
+      created_at: now - 100,
+      tags: [["d", "my-article"]],
+    }, sk);
+
+    await relay.eventBatch([note, article]);
+    await relay.refresh(); // Force refresh for testing
+
+    // Create deletion event with both e and a tags
+    const deletionEvent = genEvent({
+      kind: 5,
+      content: "Deleting multiple events",
+      created_at: now,
+      tags: [
+        ["e", note.id],
+        ["a", `30023:${pubkey}:my-article`],
+      ],
+    }, sk);
+
+    await relay.event(deletionEvent);
+    await relay.refresh(); // Force refresh for testing
+
+    // Both should be deleted
+    const notes = await relay.query([{ kinds: [1], authors: [pubkey] }]);
+    assertEquals(notes.length, 0, "Note should be deleted");
+
+    const articles = await relay.query([{ kinds: [30023], authors: [pubkey] }]);
+    assertEquals(articles.length, 0, "Article should be deleted");
+  },
+});
+
+Deno.test({
+  name: "OpenSearchRelay - NIP-09 deletion with invalid a tag format",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  async fn() {
+    await using relay = await setupRelay();
+
+    const sk = generateSecretKey();
+
+    // Create event
+    const event = genEvent({ kind: 1, content: "Event" }, sk);
+    await relay.event(event);
+    await relay.refresh(); // Force refresh for testing
+
+    // Create deletion event with invalid a tag (should be ignored)
+    const deletionEvent = genEvent({
+      kind: 5,
+      content: "Invalid deletion",
+      tags: [
+        ["a", "invalid-format"], // Missing kind:pubkey:d
+        ["e", event.id], // This should work
+      ],
+    }, sk);
+
+    // Should not throw error
+    await relay.event(deletionEvent);
+    await relay.refresh(); // Force refresh for testing
+
+    // Event should be deleted (via e tag)
+    const events = await relay.query([{ kinds: [1] }]);
+    assertEquals(events.length, 0, "Event should be deleted via e tag");
+  },
+});
+
+Deno.test({
+  name: "OpenSearchRelay - NIP-09 deletion with non-existent event IDs",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  async fn() {
+    await using relay = await setupRelay();
+
+    const sk = generateSecretKey();
+
+    // Create deletion event referencing non-existent events
+    const deletionEvent = genEvent({
+      kind: 5,
+      content: "Deleting non-existent events",
+      tags: [
+        ["e", "nonexistent1"],
+        ["e", "nonexistent2"],
+      ],
+    }, sk);
+
+    // Should not throw error
+    await relay.event(deletionEvent);
+    await relay.refresh(); // Force refresh for testing
+
+    // Only the deletion event should exist
+    const events = await relay.query([{}]);
+    assertEquals(events.length, 1, "Only deletion event should exist");
+    assertEquals(events[0].kind, 5, "Should be the deletion event");
+  },
+});
+
+Deno.test({
+  name: "OpenSearchRelay - NIP-09 prevents re-insertion of deleted events",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  async fn() {
+    await using relay = await setupRelay();
+
+    const sk = generateSecretKey();
+    const pubkey = getPublicKey(sk);
+
+    // Create event
+    const event = genEvent({ kind: 1, content: "Event to delete" }, sk);
+    await relay.event(event);
+    await relay.refresh(); // Force refresh for testing
+
+    // Verify event is stored
+    let events = await relay.query([{ kinds: [1], authors: [pubkey] }]);
+    assertEquals(events.length, 1, "Event should be stored");
+
+    // Create deletion event
+    const deletionEvent = genEvent({
+      kind: 5,
+      content: "Deleting event",
+      tags: [["e", event.id]],
+    }, sk);
+
+    await relay.event(deletionEvent);
+    await relay.refresh(); // Force refresh for testing
+
+    // Verify event is deleted
+    events = await relay.query([{ kinds: [1], authors: [pubkey] }]);
+    assertEquals(events.length, 0, "Event should be deleted");
+
+    // Try to re-insert the deleted event
+    await relay.event(event);
+    await relay.refresh(); // Force refresh for testing
+
+    // Event should still be deleted (not re-inserted)
+    events = await relay.query([{ kinds: [1], authors: [pubkey] }]);
+    assertEquals(events.length, 0, "Deleted event should not be re-inserted");
+  },
+});
+
+Deno.test({
+  name: "OpenSearchRelay - remove() method deletes events by filter",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  async fn() {
+    await using relay = await setupRelay();
+
+    const sk = generateSecretKey();
+    const pubkey = getPublicKey(sk);
+
+    // Create multiple events
+    const event1 = genEvent({ kind: 1, content: "Event 1" }, sk);
+    const event2 = genEvent({ kind: 1, content: "Event 2" }, sk);
+    const event3 = genEvent({ kind: 3, content: "Contacts" }, sk);
+
+    await relay.eventBatch([event1, event2, event3]);
+    await relay.refresh(); // Force refresh for testing
+
+    // Verify all events are stored
+    let events = await relay.query([{ authors: [pubkey] }]);
+    assertEquals(events.length, 3, "Should have three events");
+
+    // Remove kind 1 events using remove() method
+    await relay.remove([{ kinds: [1], authors: [pubkey] }]);
+    await relay.refresh(); // Force refresh for testing
+
+    // Only kind 3 event should remain
+    events = await relay.query([{ authors: [pubkey] }]);
+    assertEquals(events.length, 1, "Should have one event left");
+    assertEquals(events[0].kind, 3, "Should be the kind 3 event");
+  },
+});
+
+Deno.test({
+  name: "OpenSearchRelay - eventBatch prevents insertion of deleted events",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  async fn() {
+    await using relay = await setupRelay();
+
+    const sk = generateSecretKey();
+    const pubkey = getPublicKey(sk);
+
+    // Create events
+    const event1 = genEvent({ kind: 1, content: "Event 1" }, sk);
+    const event2 = genEvent({ kind: 1, content: "Event 2" }, sk);
+
+    await relay.eventBatch([event1, event2]);
+    await relay.refresh(); // Force refresh for testing
+
+    // Create deletion event for event1
+    const deletionEvent = genEvent({
+      kind: 5,
+      content: "Deleting event1",
+      tags: [["e", event1.id]],
+    }, sk);
+
+    await relay.event(deletionEvent);
+    await relay.refresh(); // Force refresh for testing
+
+    // Try to batch insert both events again
+    await relay.eventBatch([event1, event2]);
+    await relay.refresh(); // Force refresh for testing
+
+    // Only event2 should exist (event1 is deleted)
+    const events = await relay.query([{ kinds: [1], authors: [pubkey] }]);
+    assertEquals(events.length, 1, "Should have one event");
+    assertEquals(events[0].id, event2.id, "Should be event2");
+  },
+});

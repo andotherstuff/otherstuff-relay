@@ -968,14 +968,87 @@ export class OpenSearchRelay implements NRelay, AsyncDisposable {
   }
 
   /**
+   * Check if an event has been deleted by a deletion event (NIP-09)
+   */
+  private async isEventDeleted(
+    event: NostrEvent,
+    opts?: { signal?: AbortSignal },
+  ): Promise<boolean> {
+    // Don't check deletion events themselves
+    if (event.kind === 5) return false;
+
+    try {
+      // Query for deletion events from the same author that reference this event
+      const deletionFilters: NostrFilter[] = [];
+
+      // Check for deletion by event ID (e tag)
+      deletionFilters.push({
+        kinds: [5],
+        authors: [event.pubkey],
+        "#e": [event.id],
+      });
+
+      // Check for deletion by addressable reference (a tag)
+      if (isAddressableEvent(event.kind)) {
+        const dTag = this.getTagValue(event.tags, "d");
+        const aTag = `${event.kind}:${event.pubkey}:${dTag}`;
+        deletionFilters.push({
+          kinds: [5],
+          authors: [event.pubkey],
+          "#a": [aTag],
+          since: event.created_at, // Only deletions created after the event
+        });
+      }
+
+      // Query for deletion events
+      for (const filter of deletionFilters) {
+        const deletions = await this.queryFilter(filter, opts?.signal);
+
+        // For addressable events, check if deletion timestamp is after event creation
+        if (deletions.length > 0) {
+          if (isAddressableEvent(event.kind)) {
+            // Check if any deletion event has created_at >= event.created_at
+            const hasValidDeletion = deletions.some(
+              (del) => del.created_at >= event.created_at,
+            );
+            if (hasValidDeletion) return true;
+          } else {
+            // For regular events, any deletion event is valid
+            return true;
+          }
+        }
+      }
+
+      return false;
+    } catch (error) {
+      console.error("Failed to check deletion status:", error);
+      // On error, assume not deleted to avoid blocking inserts
+      return false;
+    }
+  }
+
+  /**
    * Insert a single event into OpenSearch
    * Events are expected to be pre-validated
    * For replaceable/addressable events, only stores if newer than existing
+   * For deletion events (kind 5), processes deletions before storing
+   * Checks if event has been deleted before inserting
    */
   async event(
     event: NostrEvent,
     opts?: { signal?: AbortSignal },
   ): Promise<void> {
+    // Process deletion events (NIP-09)
+    if (event.kind === 5) {
+      await this.processDeletionEvent(event, opts);
+    }
+
+    // Check if this event has been deleted (NIP-09)
+    if (await this.isEventDeleted(event, opts)) {
+      console.log(`⚠️  Skipping deleted event ${event.id}`);
+      return;
+    }
+
     const doc = this.eventToDocument(event);
     const docId = this.getDocumentId(event);
 
@@ -1025,6 +1098,8 @@ export class OpenSearchRelay implements NRelay, AsyncDisposable {
   /**
    * Insert a batch of events into OpenSearch using bulk API
    * Events are expected to be pre-validated
+   * For deletion events (kind 5), processes deletions before storing
+   * Checks if events have been deleted before inserting
    * This is highly optimized for throughput
    */
   async eventBatch(
@@ -1033,10 +1108,36 @@ export class OpenSearchRelay implements NRelay, AsyncDisposable {
   ): Promise<void> {
     if (events.length === 0) return;
 
+    // Process deletion events first (NIP-09)
+    const deletionEvents = events.filter((e) => e.kind === 5);
+    for (const deletionEvent of deletionEvents) {
+      await this.processDeletionEvent(deletionEvent, opts);
+    }
+
+    // Filter out events that have been deleted
+    // Check in parallel for better performance
+    const deletionChecks = await Promise.all(
+      events.map(async (event) => ({
+        event,
+        isDeleted: await this.isEventDeleted(event, opts),
+      })),
+    );
+
+    const nonDeletedEvents = deletionChecks
+      .filter(({ isDeleted }) => !isDeleted)
+      .map(({ event }) => event);
+
+    const deletedCount = events.length - nonDeletedEvents.length;
+    if (deletedCount > 0) {
+      console.log(`⚠️  Skipped ${deletedCount} deleted event(s)`);
+    }
+
+    if (nonDeletedEvents.length === 0) return;
+
     // Group events by document ID to handle replaceable events
     const eventsByDocId = new Map<string, NostrEvent>();
 
-    for (const event of events) {
+    for (const event of nonDeletedEvents) {
       const docId = this.getDocumentId(event);
       const existing = eventsByDocId.get(docId);
 
@@ -1233,13 +1334,139 @@ export class OpenSearchRelay implements NRelay, AsyncDisposable {
   }
 
   /**
-   * Remove events (not supported)
+   * Process a deletion event (NIP-09) - internal method
+   * Deletes events referenced by the deletion request if they have the same pubkey
    */
-  remove(
-    _filters: NostrFilter[],
-    _opts?: { signal?: AbortSignal },
+  private async processDeletionEvent(
+    deletionEvent: NostrEvent,
+    opts?: { signal?: AbortSignal },
   ): Promise<void> {
-    throw new Error("Event deletion not supported");
+    const pubkey = deletionEvent.pubkey;
+    const deletionTimestamp = deletionEvent.created_at;
+
+    // Extract event IDs from 'e' tags
+    const eventIds = this.extractTagValues(deletionEvent.tags, "e");
+
+    // Extract addressable event references from 'a' tags
+    const addressableRefs = this.extractTagValues(deletionEvent.tags, "a");
+
+    // Build filters for events to delete
+    const filters: NostrFilter[] = [];
+
+    // Add filter for event IDs
+    if (eventIds.length > 0) {
+      filters.push({
+        ids: eventIds,
+        authors: [pubkey], // Only delete if pubkey matches
+      });
+    }
+
+    // Add filters for addressable events
+    for (const aTag of addressableRefs) {
+      const parts = aTag.split(":");
+      if (parts.length !== 3) continue;
+
+      const [kindStr, aPubkey, dTag] = parts;
+
+      // Only delete if pubkey matches
+      if (aPubkey !== pubkey) continue;
+
+      const kind = parseInt(kindStr);
+      if (isNaN(kind)) continue;
+
+      // Filter for addressable events up to deletion timestamp
+      filters.push({
+        kinds: [kind],
+        authors: [aPubkey],
+        "#d": [dTag],
+        until: deletionTimestamp,
+      });
+    }
+
+    // Delete using the remove method
+    if (filters.length > 0) {
+      try {
+        await this.remove(filters, opts);
+        console.log(
+          `🗑️  Processed deletion request ${deletionEvent.id}`,
+        );
+      } catch (error) {
+        console.error("Failed to process deletion event:", error);
+        // Don't throw - we still want to store the deletion event
+      }
+    }
+  }
+
+  /**
+   * Remove events matching the given filters
+   * This is the public API for event deletion
+   */
+  async remove(
+    filters: NostrFilter[],
+    opts?: { signal?: AbortSignal },
+  ): Promise<void> {
+    const docIdsToDelete: string[] = [];
+
+    for (const filter of filters) {
+      if (opts?.signal?.aborted) {
+        break;
+      }
+
+      try {
+        // Query events matching the filter
+        const events = await this.queryFilter(filter, opts?.signal);
+
+        // Get document IDs for matched events
+        for (const event of events) {
+          const docId = this.getDocumentId(event);
+          docIdsToDelete.push(docId);
+        }
+      } catch (error) {
+        console.error("Failed to query events for deletion:", error);
+      }
+    }
+
+    // Remove duplicates
+    const uniqueDocIds = [...new Set(docIdsToDelete)];
+
+    // Delete all matching documents in bulk
+    if (uniqueDocIds.length > 0) {
+      const body: Array<Record<string, unknown>> = [];
+
+      for (const docId of uniqueDocIds) {
+        body.push({
+          delete: {
+            _index: this.indexName,
+            _id: docId,
+          },
+        });
+      }
+
+      try {
+        const response = await this.client.bulk({
+          body,
+          refresh: false,
+          // @ts-ignore: signal not in types but supported by underlying HTTP client
+          signal: opts?.signal,
+        });
+
+        if (response.body.errors) {
+          const erroredDocuments = response.body.items.filter(
+            (item: Record<string, unknown>) =>
+              (item.delete as Record<string, unknown>)?.error,
+          );
+          console.error(
+            `Bulk delete had ${erroredDocuments.length} errors:`,
+            erroredDocuments.slice(0, 5),
+          );
+        } else {
+          console.log(`🗑️  Deleted ${uniqueDocIds.length} events`);
+        }
+      } catch (error) {
+        console.error("Bulk delete failed:", error);
+        throw error;
+      }
+    }
   }
 
   /**
