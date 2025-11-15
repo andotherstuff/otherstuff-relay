@@ -36,21 +36,10 @@ interface NostrEventDocument {
 /**
  * Event kind categories based on NIP-01
  */
-function _isRegularEvent(kind: number): boolean {
-  return (kind >= 1000 && kind < 10000) ||
-    (kind >= 4 && kind < 45) ||
-    kind === 1 ||
-    kind === 2;
-}
-
 function isReplaceableEvent(kind: number): boolean {
   return (kind >= 10000 && kind < 20000) ||
     kind === 0 ||
     kind === 3;
-}
-
-function _isEphemeralEvent(kind: number): boolean {
-  return kind >= 20000 && kind < 30000;
 }
 
 function isAddressableEvent(kind: number): boolean {
@@ -91,8 +80,8 @@ export class OpenSearchRelay implements NRelay, AsyncDisposable {
   /**
    * Generate OpenSearch document ID for an event
    * - Regular events: use event.id
-   * - Replaceable events: use pubkey:kind
-   * - Addressable events: use pubkey:kind:d-tag
+   * - Replaceable events: use kind:pubkey:
+   * - Addressable events: use kind:pubkey:d-tag
    * This ensures only the latest event is stored for replaceable/addressable events
    */
   private getDocumentId(event: NostrEvent): string {
