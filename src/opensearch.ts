@@ -35,6 +35,19 @@ interface NostrEventDocument {
 }
 
 /**
+ * Event kind categories based on NIP-01
+ */
+function isReplaceableEvent(kind: number): boolean {
+  return (kind >= 10000 && kind < 20000) ||
+    kind === 0 ||
+    kind === 3;
+}
+
+function isAddressableEvent(kind: number): boolean {
+  return kind >= 30000 && kind < 40000;
+}
+
+/**
  * OpenSearch-backed Nostr relay implementation
  * Handles event storage and querying with full-text search support (NIP-50)
  * Expects events to be pre-validated before insertion
@@ -55,6 +68,33 @@ export class OpenSearchRelay implements NRelay, AsyncDisposable {
     return tags
       .filter((tag) => tag[0] === tagName && tag.length >= 2)
       .map((tag) => tag[1]);
+  }
+
+  /**
+   * Get the first value of a specific tag, or empty string if not found
+   */
+  private getTagValue(tags: string[][], tagName: string): string {
+    const values = this.extractTagValues(tags, tagName);
+    return values.length > 0 ? values[0] : "";
+  }
+
+  /**
+   * Generate OpenSearch document ID for an event
+   * - Regular events: use event.id
+   * - Replaceable events: use kind:pubkey:
+   * - Addressable events: use kind:pubkey:d-tag
+   * This ensures only the latest event is stored for replaceable/addressable events
+   */
+  private getDocumentId(event: NostrEvent): string {
+    if (isAddressableEvent(event.kind)) {
+      const dTag = this.getTagValue(event.tags, "d");
+      return `${event.kind}:${event.pubkey}:${dTag}`;
+    } else if (isReplaceableEvent(event.kind)) {
+      return `${event.kind}:${event.pubkey}:`;
+    } else {
+      // Regular and ephemeral events use their event ID
+      return event.id;
+    }
   }
 
   /**
@@ -273,18 +313,71 @@ export class OpenSearchRelay implements NRelay, AsyncDisposable {
   }
 
   /**
+   * Check if a new event should replace an existing one
+   * Returns true if newEvent is newer (higher created_at, or lower id if equal timestamps)
+   */
+  private shouldReplace(
+    newEvent: NostrEvent,
+    existingEvent: NostrEvent,
+  ): boolean {
+    if (newEvent.created_at > existingEvent.created_at) {
+      return true;
+    }
+    if (newEvent.created_at === existingEvent.created_at) {
+      // Lower ID wins (lexical order)
+      return newEvent.id < existingEvent.id;
+    }
+    return false;
+  }
+
+  /**
    * Insert a single event into OpenSearch
    * Events are expected to be pre-validated
+   * For replaceable/addressable events, only stores if newer than existing
    */
   async event(
     event: NostrEvent,
     opts?: { signal?: AbortSignal },
   ): Promise<void> {
     const doc = this.eventToDocument(event);
+    const docId = this.getDocumentId(event);
+
+    // For replaceable/addressable events, check if we should replace
+    if (isReplaceableEvent(event.kind) || isAddressableEvent(event.kind)) {
+      try {
+        const existing = await this.client.get({
+          index: this.indexName,
+          id: docId,
+          _source: ["id", "created_at"],
+        });
+
+        if (existing.body.found) {
+          const existingDoc = existing.body._source as {
+            id: string;
+            created_at: number;
+          };
+          const existingEvent: NostrEvent = {
+            id: existingDoc.id,
+            created_at: existingDoc.created_at,
+            // We only need id and created_at for comparison
+          } as NostrEvent;
+
+          // Only insert if new event should replace existing one
+          if (!this.shouldReplace(event, existingEvent)) {
+            return; // Don't replace - existing event is newer or equal
+          }
+        }
+      } catch (error) {
+        // Document doesn't exist, proceed with insert
+        if ((error as { statusCode?: number }).statusCode !== 404) {
+          throw error;
+        }
+      }
+    }
 
     await this.client.index({
       index: this.indexName,
-      id: event.id,
+      id: docId,
       body: doc,
       refresh: false, // Don't refresh immediately for better performance
       // @ts-ignore: signal not in types but supported by underlying HTTP client
@@ -303,17 +396,87 @@ export class OpenSearchRelay implements NRelay, AsyncDisposable {
   ): Promise<void> {
     if (events.length === 0) return;
 
+    // Group events by document ID to handle replaceable events
+    const eventsByDocId = new Map<string, NostrEvent>();
+
+    for (const event of events) {
+      const docId = this.getDocumentId(event);
+      const existing = eventsByDocId.get(docId);
+
+      // If this is a replaceable/addressable event, keep only the newest
+      if (existing) {
+        if (this.shouldReplace(event, existing)) {
+          eventsByDocId.set(docId, event);
+        }
+      } else {
+        eventsByDocId.set(docId, event);
+      }
+    }
+
+    // For replaceable/addressable events, we need to check against DB
+    const replaceableDocIds = Array.from(eventsByDocId.entries())
+      .filter(([_, event]) =>
+        isReplaceableEvent(event.kind) || isAddressableEvent(event.kind)
+      )
+      .map(([docId, _]) => docId);
+
+    // Fetch existing replaceable events in bulk
+    const existingEvents = new Map<string, NostrEvent>();
+    if (replaceableDocIds.length > 0) {
+      try {
+        const mgetResponse = await this.client.mget({
+          index: this.indexName,
+          body: {
+            ids: replaceableDocIds,
+          },
+          _source: ["id", "created_at"],
+        });
+
+        for (const doc of mgetResponse.body.docs) {
+          // Type guard for successful document retrieval
+          if ("found" in doc && doc.found && "_source" in doc) {
+            existingEvents.set(doc._id, {
+              id: (doc._source as { id: string; created_at: number }).id,
+              created_at: (doc._source as { id: string; created_at: number })
+                .created_at,
+            } as NostrEvent);
+          }
+        }
+      } catch (error) {
+        console.error("Failed to fetch existing events:", error);
+        // Continue with insert anyway
+      }
+    }
+
+    // Filter out events that shouldn't replace existing ones
+    const eventsToInsert: Array<[string, NostrEvent]> = [];
+    for (const [docId, event] of eventsByDocId.entries()) {
+      const existing = existingEvents.get(docId);
+
+      if (existing) {
+        // Only insert if new event should replace existing
+        if (this.shouldReplace(event, existing)) {
+          eventsToInsert.push([docId, event]);
+        }
+      } else {
+        // No existing event, insert
+        eventsToInsert.push([docId, event]);
+      }
+    }
+
+    if (eventsToInsert.length === 0) return;
+
     // Build bulk request body
     const body: Array<Record<string, unknown> | NostrEventDocument> = [];
 
-    for (const event of events) {
+    for (const [docId, event] of eventsToInsert) {
       const doc = this.eventToDocument(event);
 
       // Index operation (upsert)
       body.push({
         index: {
           _index: this.indexName,
-          _id: event.id,
+          _id: docId,
         },
       });
       body.push(doc);

@@ -634,3 +634,323 @@ Deno.test({
     );
   },
 });
+
+Deno.test({
+  name: "OpenSearchRelay - replaceable events (kind 0) only keep latest",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  async fn() {
+    await using relay = await setupRelay();
+
+    const sk = generateSecretKey();
+    const pubkey = getPublicKey(sk);
+    const now = Math.floor(Date.now() / 1000);
+
+    // Create two kind 0 events from same author
+    const olderEvent = genEvent({
+      kind: 0,
+      content: JSON.stringify({ name: "Old Name" }),
+      created_at: now - 100,
+    }, sk);
+
+    const newerEvent = genEvent({
+      kind: 0,
+      content: JSON.stringify({ name: "New Name" }),
+      created_at: now,
+    }, sk);
+
+    // Insert older event first
+    await relay.event(olderEvent);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    // Verify older event is stored
+    let events = await relay.query([{ kinds: [0], authors: [pubkey] }]);
+    assertEquals(events.length, 1, "Should have one event");
+    assertEquals(events[0].id, olderEvent.id, "Should be the older event");
+
+    // Insert newer event
+    await relay.event(newerEvent);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    // Query should return only the newer event
+    events = await relay.query([{ kinds: [0], authors: [pubkey] }]);
+    assertEquals(events.length, 1, "Should still have only one event");
+    assertEquals(events[0].id, newerEvent.id, "Should be the newer event");
+    assertEquals(
+      JSON.parse(events[0].content).name,
+      "New Name",
+      "Content should be from newer event",
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "OpenSearchRelay - replaceable events don't replace if older timestamp",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  async fn() {
+    await using relay = await setupRelay();
+
+    const sk = generateSecretKey();
+    const pubkey = getPublicKey(sk);
+    const now = Math.floor(Date.now() / 1000);
+
+    // Create two kind 0 events from same author
+    const newerEvent = genEvent({
+      kind: 0,
+      content: JSON.stringify({ name: "New Name" }),
+      created_at: now,
+    }, sk);
+
+    const olderEvent = genEvent({
+      kind: 0,
+      content: JSON.stringify({ name: "Old Name" }),
+      created_at: now - 100,
+    }, sk);
+
+    // Insert newer event first
+    await relay.event(newerEvent);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    // Insert older event (should be rejected)
+    await relay.event(olderEvent);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    // Query should return only the newer event
+    const events = await relay.query([{ kinds: [0], authors: [pubkey] }]);
+    assertEquals(events.length, 1, "Should still have only one event");
+    assertEquals(events[0].id, newerEvent.id, "Should be the newer event");
+  },
+});
+
+Deno.test({
+  name: "OpenSearchRelay - addressable events (kind 30000+) with d tag",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  async fn() {
+    await using relay = await setupRelay();
+
+    const sk = generateSecretKey();
+    const pubkey = getPublicKey(sk);
+    const now = Math.floor(Date.now() / 1000);
+
+    // Create two kind 30023 (long-form content) events with same d tag
+    const olderArticle = genEvent({
+      kind: 30023,
+      content: "Old article content",
+      created_at: now - 100,
+      tags: [["d", "my-article"]],
+    }, sk);
+
+    const newerArticle = genEvent({
+      kind: 30023,
+      content: "Updated article content",
+      created_at: now,
+      tags: [["d", "my-article"]],
+    }, sk);
+
+    // Create another article with different d tag
+    const differentArticle = genEvent({
+      kind: 30023,
+      content: "Different article",
+      created_at: now,
+      tags: [["d", "other-article"]],
+    }, sk);
+
+    // Insert all events
+    await relay.eventBatch([olderArticle, newerArticle, differentArticle]);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    // Query should return only the newer version of "my-article" and the other article
+    const events = await relay.query([{ kinds: [30023], authors: [pubkey] }]);
+    assertEquals(events.length, 2, "Should have two articles");
+
+    const myArticle = events.find((e) =>
+      e.tags.some((t) => t[0] === "d" && t[1] === "my-article")
+    );
+    assertEquals(
+      myArticle?.id,
+      newerArticle.id,
+      "Should be the newer version",
+    );
+    assertEquals(
+      myArticle?.content,
+      "Updated article content",
+      "Content should be updated",
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "OpenSearchRelay - addressable events with empty d tag are separate from no d tag",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  async fn() {
+    await using relay = await setupRelay();
+
+    const sk = generateSecretKey();
+    const pubkey = getPublicKey(sk);
+    const now = Math.floor(Date.now() / 1000);
+
+    // Event with d tag = ""
+    const emptyDTag = genEvent({
+      kind: 30023,
+      content: "Empty d tag",
+      created_at: now,
+      tags: [["d", ""]],
+    }, sk);
+
+    // Event with no d tag (defaults to "")
+    const noDTag = genEvent({
+      kind: 30023,
+      content: "No d tag",
+      created_at: now + 1,
+      tags: [],
+    }, sk);
+
+    await relay.eventBatch([emptyDTag, noDTag]);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    // Both should be treated as having d="" and only the newer one should exist
+    const events = await relay.query([{ kinds: [30023], authors: [pubkey] }]);
+    assertEquals(events.length, 1, "Should have only one event");
+    assertEquals(
+      events[0].id,
+      noDTag.id,
+      "Should be the newer event (no d tag)",
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "OpenSearchRelay - replaceable events with same timestamp, lower ID wins",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  async fn() {
+    await using relay = await setupRelay();
+
+    const sk = generateSecretKey();
+    const now = Math.floor(Date.now() / 1000);
+
+    // Create two events with same timestamp
+    const event1 = genEvent({
+      kind: 0,
+      content: JSON.stringify({ name: "Event 1" }),
+      created_at: now,
+    }, sk);
+
+    const event2 = genEvent({
+      kind: 0,
+      content: JSON.stringify({ name: "Event 2" }),
+      created_at: now,
+    }, sk);
+
+    // Determine which has lower ID
+    const lowerIdEvent = event1.id < event2.id ? event1 : event2;
+    const higherIdEvent = event1.id < event2.id ? event2 : event1;
+
+    // Insert higher ID first
+    await relay.event(higherIdEvent);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    // Insert lower ID (should replace)
+    await relay.event(lowerIdEvent);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    // Query should return the event with lower ID
+    const events = await relay.query([{ kinds: [0] }]);
+    assertEquals(events.length, 1, "Should have only one event");
+    assertEquals(
+      events[0].id,
+      lowerIdEvent.id,
+      "Should be the event with lower ID",
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "OpenSearchRelay - batch insert deduplicates replaceable events within batch",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  async fn() {
+    await using relay = await setupRelay();
+
+    const sk = generateSecretKey();
+    const pubkey = getPublicKey(sk);
+    const now = Math.floor(Date.now() / 1000);
+
+    // Create multiple kind 0 events in a batch
+    const events: NostrEvent[] = [
+      genEvent({
+        kind: 0,
+        content: JSON.stringify({ name: "Version 1" }),
+        created_at: now - 200,
+      }, sk),
+      genEvent({
+        kind: 0,
+        content: JSON.stringify({ name: "Version 2" }),
+        created_at: now - 100,
+      }, sk),
+      genEvent({
+        kind: 0,
+        content: JSON.stringify({ name: "Version 3" }),
+        created_at: now,
+      }, sk),
+    ];
+
+    // Insert all at once
+    await relay.eventBatch(events);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    // Should only have the newest version
+    const storedEvents = await relay.query([{ kinds: [0], authors: [pubkey] }]);
+    assertEquals(storedEvents.length, 1, "Should have only one event");
+    assertEquals(
+      storedEvents[0].id,
+      events[2].id,
+      "Should be the newest event",
+    );
+    assertEquals(
+      JSON.parse(storedEvents[0].content).name,
+      "Version 3",
+      "Should have newest content",
+    );
+  },
+});
+
+Deno.test({
+  name: "OpenSearchRelay - regular events (kind 1) are NOT replaceable",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  async fn() {
+    await using relay = await setupRelay();
+
+    const sk = generateSecretKey();
+    const pubkey = getPublicKey(sk);
+    const now = Math.floor(Date.now() / 1000);
+
+    // Create two kind 1 events from same author
+    const event1 = genEvent({
+      kind: 1,
+      content: "First note",
+      created_at: now - 100,
+    }, sk);
+
+    const event2 = genEvent({
+      kind: 1,
+      content: "Second note",
+      created_at: now,
+    }, sk);
+
+    await relay.eventBatch([event1, event2]);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    // Both events should be stored
+    const events = await relay.query([{ kinds: [1], authors: [pubkey] }]);
+    assertEquals(events.length, 2, "Should have both events");
+  },
+});
