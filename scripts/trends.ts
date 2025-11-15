@@ -30,9 +30,18 @@ async function findPopularEvents(
     until?: number;
     limit?: number;
     includeEventData?: boolean;
+    sourceKinds?: number[];
+    targetKinds?: number[];
   },
 ): Promise<PopularEvent[]> {
-  const { since, until, limit = 100, includeEventData = true } = options;
+  const {
+    since,
+    until,
+    limit = 100,
+    includeEventData = true,
+    sourceKinds,
+    targetKinds,
+  } = options;
 
   // Build the query to filter events by timeframe
   const must: Record<string, unknown>[] = [];
@@ -46,6 +55,11 @@ async function findPopularEvents(
 
   // Only include events that have e tags
   must.push({ exists: { field: "tag_e" } });
+
+  // Filter by source event kinds (the events doing the referencing)
+  if (sourceKinds && sourceKinds.length > 0) {
+    must.push({ terms: { kind: sourceKinds } });
+  }
 
   const query = must.length > 0
     ? { bool: { must } }
@@ -83,14 +97,64 @@ async function findPopularEvents(
   if (includeEventData && popularEvents.length > 0) {
     const eventIds = popularEvents.map((e) => e.eventId);
 
+    // Build query for fetching target events
+    const fetchQuery: Record<string, unknown> = {
+      terms: {
+        id: eventIds,
+      },
+    };
+
+    // Filter by target event kinds if specified
+    if (targetKinds && targetKinds.length > 0) {
+      const eventsResponse = await client.search({
+        index: indexName,
+        body: {
+          query: {
+            bool: {
+              must: [
+                fetchQuery,
+                { terms: { kind: targetKinds } },
+              ],
+            },
+          },
+          size: eventIds.length,
+          _source: ["id", "pubkey", "created_at", "kind", "content"],
+        },
+      });
+
+      // Create a map of event data
+      const eventDataMap = new Map();
+      for (const hit of eventsResponse.body.hits.hits) {
+        const source = hit._source;
+        if (source) {
+          eventDataMap.set(source.id, {
+            id: source.id,
+            pubkey: source.pubkey,
+            created_at: source.created_at,
+            kind: source.kind,
+            content: source.content.substring(0, 100), // Truncate content for display
+          });
+        }
+      }
+
+      // Attach event data to popular events (only for matching kinds)
+      // Filter out events that don't match the target kinds
+      const filteredEvents = [];
+      for (const popularEvent of popularEvents) {
+        const eventData = eventDataMap.get(popularEvent.eventId);
+        if (eventData) {
+          popularEvent.event = eventData;
+          filteredEvents.push(popularEvent);
+        }
+      }
+
+      return filteredEvents;
+    }
+
     const eventsResponse = await client.search({
       index: indexName,
       body: {
-        query: {
-          terms: {
-            id: eventIds,
-          },
-        },
+        query: fetchQuery,
         size: eventIds.length,
         _source: ["id", "pubkey", "created_at", "kind", "content"],
       },
@@ -148,7 +212,7 @@ function formatDuration(seconds: number): string {
  */
 async function main() {
   const args = parseArgs(Deno.args, {
-    string: ["since", "until", "duration"],
+    string: ["since", "until", "duration", "source-kinds", "target-kinds"],
     boolean: ["no-event-data", "help"],
     default: {
       limit: 100,
@@ -162,6 +226,8 @@ async function main() {
       d: "duration",
       l: "limit",
       n: "no-event-data",
+      sk: "source-kinds",
+      tk: "target-kinds",
     },
   });
 
@@ -172,25 +238,34 @@ Usage: deno task popular-events [options]
 Find the most popular events based on how many times they are referenced by other events via 'e' tags.
 
 Options:
-  -s, --since <timestamp>    Start of timeframe (Unix timestamp or ISO date)
-  -u, --until <timestamp>    End of timeframe (Unix timestamp or ISO date)
-  -d, --duration <duration>  Duration before now (e.g., "1h", "24h", "7d", "30d")
-  -l, --limit <number>       Maximum number of results (default: 100)
-  -n, --no-event-data        Don't fetch event data, only show IDs and counts
-  -h, --help                 Show this help message
+  -s, --since <timestamp>       Start of timeframe (Unix timestamp or ISO date)
+  -u, --until <timestamp>       End of timeframe (Unix timestamp or ISO date)
+  -d, --duration <duration>     Duration before now (e.g., "1h", "24h", "7d", "30d")
+  -l, --limit <number>          Maximum number of results (default: 100)
+  -n, --no-event-data           Don't fetch event data, only show IDs and counts
+      --source-kinds <kinds>    Filter source events by kind (comma-separated, e.g., "1,6,7")
+      --target-kinds <kinds>    Filter target events by kind (comma-separated, e.g., "1,30023")
+  -h, --help                    Show this help message
+
+Event Types:
+  - Source events: Events that contain 'e' tags (doing the referencing)
+  - Target events: Events being referenced (the popular events)
 
 Examples:
   # Most popular events in the last 24 hours
   deno task popular-events --duration 24h
 
-  # Most popular events in the last 7 days, top 50
-  deno task popular-events --duration 7d --limit 50
+  # Most popular kind 1 (text notes) events in the last 7 days
+  deno task popular-events --duration 7d --target-kinds 1
 
-  # Most popular events between specific dates
-  deno task popular-events --since 2025-11-01 --until 2025-11-15
+  # Most popular events referenced by kind 6 (reposts) and kind 7 (reactions)
+  deno task popular-events --duration 24h --source-kinds 6,7
 
-  # Most popular events since a specific timestamp
-  deno task popular-events --since 1700000000
+  # Most popular kind 1 events referenced by kind 1 events (notes citing notes)
+  deno task popular-events --duration 7d --source-kinds 1 --target-kinds 1
+
+  # Most popular long-form articles (kind 30023)
+  deno task popular-events --duration 30d --target-kinds 30023
 
   # Just show IDs and counts (faster)
   deno task popular-events --duration 24h --no-event-data
@@ -200,6 +275,32 @@ Examples:
 
   // Load configuration
   const config = new Config(Deno.env);
+
+  // Parse kind filters
+  let sourceKinds: number[] | undefined;
+  let targetKinds: number[] | undefined;
+
+  if (args["source-kinds"]) {
+    sourceKinds = args["source-kinds"].split(",").map((k) => {
+      const kind = parseInt(k.trim());
+      if (isNaN(kind)) {
+        console.error(`Invalid source kind: ${k}`);
+        Deno.exit(1);
+      }
+      return kind;
+    });
+  }
+
+  if (args["target-kinds"]) {
+    targetKinds = args["target-kinds"].split(",").map((k) => {
+      const kind = parseInt(k.trim());
+      if (isNaN(kind)) {
+        console.error(`Invalid target kind: ${k}`);
+        Deno.exit(1);
+      }
+      return kind;
+    });
+  }
 
   // Parse timeframe
   let since: number | undefined;
@@ -299,6 +400,15 @@ Examples:
     }
 
     console.log(`Limit: ${args.limit}`);
+
+    if (sourceKinds && sourceKinds.length > 0) {
+      console.log(`Source kinds: ${sourceKinds.join(", ")}`);
+    }
+
+    if (targetKinds && targetKinds.length > 0) {
+      console.log(`Target kinds: ${targetKinds.join(", ")}`);
+    }
+
     console.log("");
 
     // Find popular events
@@ -307,6 +417,8 @@ Examples:
       until,
       limit: typeof args.limit === "number" ? args.limit : 100,
       includeEventData: !args["no-event-data"],
+      sourceKinds,
+      targetKinds,
     });
 
     if (popularEvents.length === 0) {

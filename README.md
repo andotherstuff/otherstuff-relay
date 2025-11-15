@@ -205,6 +205,15 @@ deno task trends --duration 24h
 # Most popular events in the last 7 days, top 50
 deno task trends --duration 7d --limit 50
 
+# Most popular kind 1 (text notes) events in the last 7 days
+deno task trends --duration 7d --target-kinds 1
+
+# Most popular events referenced by kind 6 (reposts) and kind 7 (reactions)
+deno task trends --duration 24h --source-kinds 6,7
+
+# Most popular kind 1 events referenced by kind 1 events (notes citing notes)
+deno task trends --duration 7d --source-kinds 1 --target-kinds 1
+
 # Most popular events between specific dates
 deno task trends --since 2025-11-01 --until 2025-11-15
 
