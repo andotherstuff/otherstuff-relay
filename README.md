@@ -193,6 +193,31 @@ This creates the `nostr-events` index with optimized mappings for:
 - Time-based queries
 - Relevance scoring
 
+### Analytics
+
+Find the most popular events based on how many times they are referenced by
+other events via `e` tags:
+
+```bash
+# Most popular events in the last 24 hours
+deno task trends --duration 24h
+
+# Most popular events in the last 7 days, top 50
+deno task trends --duration 7d --limit 50
+
+# Most popular events between specific dates
+deno task trends --since 2025-11-01 --until 2025-11-15
+
+# Most popular events since a specific timestamp
+deno task trends --since 1700000000
+
+# Just show IDs and counts (faster)
+deno task trends --duration 24h --no-event-data
+
+# Show all options
+deno task trends --help
+```
+
 ### Running the Server
 
 **Simple (recommended)** - Run everything with one command:

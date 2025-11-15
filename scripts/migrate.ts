@@ -2,8 +2,8 @@
  * Migration script to initialize OpenSearch index
  */
 import { Client } from "@opensearch-project/opensearch";
-import { Config } from "./config.ts";
-import { OpenSearchRelay } from "./opensearch.ts";
+import { Config } from "../src/config.ts";
+import { OpenSearchRelay } from "../src/opensearch.ts";
 
 const config = new Config(Deno.env);
 
