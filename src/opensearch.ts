@@ -11,6 +11,45 @@ import {
 } from "@nostrify/nostrify";
 
 /**
+ * OpenSearch aggregation bucket type
+ */
+interface AggregationBucket {
+  key: string;
+  doc_count: number;
+  [key: string]: unknown;
+}
+
+/**
+ * OpenSearch terms aggregation response
+ */
+interface TermsAggregation {
+  buckets: AggregationBucket[];
+}
+
+/**
+ * OpenSearch aggregation response structure
+ */
+interface AggregationResponse {
+  [key: string]: TermsAggregation;
+}
+
+/**
+ * Nested aggregation bucket for controversial events
+ */
+interface NestedAggregationBucket extends AggregationBucket {
+  reaction_kinds?: {
+    reactions?: TermsAggregation;
+  };
+}
+
+/**
+ * OpenSearch search hit
+ */
+interface SearchHit<T> {
+  _source: T;
+}
+
+/**
  * OpenSearch document structure for Nostr events
  */
 interface NostrEventDocument {
@@ -44,8 +83,9 @@ export class OpenSearchRelay implements NRelay, AsyncDisposable {
 
   constructor(
     private client: Client,
+    indexName?: string,
   ) {
-    this.indexName = "nostr-events";
+    this.indexName = indexName || "nostr-events";
   }
 
   /**
@@ -185,18 +225,18 @@ export class OpenSearchRelay implements NRelay, AsyncDisposable {
       const tokens = NIP50.parseInput(filter.search);
       const searchText = tokens.filter((t) => typeof t === "string").join(" ");
 
-      // TODO: Support NIP-50 search extensions
-
-      // Use match query with boosting for better relevance
-      must.push({
-        match: {
-          content: {
-            query: searchText,
-            operator: "and",
-            fuzziness: "AUTO",
+      // Use match query with boosting for better relevance if there's search text
+      if (searchText.trim()) {
+        must.push({
+          match: {
+            content: {
+              query: searchText,
+              operator: "and",
+              fuzziness: "AUTO",
+            },
           },
-        },
-      });
+        });
+      }
     }
 
     const query: Record<string, unknown> = {
@@ -219,6 +259,41 @@ export class OpenSearchRelay implements NRelay, AsyncDisposable {
   }
 
   /**
+   * Parse NIP-50 search extensions from search string
+   */
+  private parseSearchExtensions(search: string): {
+    sortType?: "hot" | "top" | "controversial" | "rising";
+    searchText: string;
+    hasMultipleSorts: boolean;
+  } {
+    const tokens = NIP50.parseInput(search);
+    const sortTokens = tokens.filter((t) =>
+      typeof t === "object" && t.key === "sort"
+    );
+    const searchText = tokens.filter((t) => typeof t === "string").join(" ");
+
+    // If multiple sort tokens exist, mark it as invalid
+    if (sortTokens.length > 1) {
+      return { hasMultipleSorts: true, searchText: "" };
+    }
+
+    // Get the sort type if present
+    let sortType: "hot" | "top" | "controversial" | "rising" | undefined;
+    if (sortTokens.length === 1) {
+      const token = sortTokens[0] as { key: string; value: string };
+      const value = token.value.toLowerCase();
+      if (
+        value === "hot" || value === "top" || value === "controversial" ||
+        value === "rising"
+      ) {
+        sortType = value;
+      }
+    }
+
+    return { sortType, searchText, hasMultipleSorts: false };
+  }
+
+  /**
    * Query events from OpenSearch based on a single filter
    */
   private async queryFilter(
@@ -230,14 +305,36 @@ export class OpenSearchRelay implements NRelay, AsyncDisposable {
       return [];
     }
 
+    // Parse search extensions if present
+    let sortType: "hot" | "top" | "controversial" | "rising" | undefined;
+    let hasFullTextSearch = false;
+
+    if (filter.search) {
+      const { sortType: parsedSort, searchText, hasMultipleSorts } = this
+        .parseSearchExtensions(filter.search);
+
+      // If multiple sort tokens exist, return 0 events
+      if (hasMultipleSorts) {
+        return [];
+      }
+
+      sortType = parsedSort;
+      hasFullTextSearch = searchText.trim().length > 0;
+    }
+
     // Default to 500, cap at 5000
     const limit = Math.min(filter.limit || 500, 5000);
 
+    // For sort extensions, use aggregation-based queries
+    if (sortType) {
+      return await this.querySorted(filter, sortType, limit);
+    }
+
     const query = this.buildQuery(filter);
 
-    // For NIP-50 search queries, sort by relevance score first, then by created_at
+    // For NIP-50 search queries with text, sort by relevance score first, then by created_at
     // For regular queries, sort by created_at only (newest first)
-    const sort = filter.search
+    const sort = hasFullTextSearch
       ? [{ _score: { order: "desc" as const } }, {
         created_at: { order: "desc" as const },
       }]
@@ -270,6 +367,546 @@ export class OpenSearchRelay implements NRelay, AsyncDisposable {
       console.error("OpenSearch query failed:", error);
       throw error;
     }
+  }
+
+  /**
+   * Query events with special sorting (hot, top, controversial, rising)
+   */
+  private async querySorted(
+    filter: NostrFilter,
+    sortType: "hot" | "top" | "controversial" | "rising",
+    limit: number,
+  ): Promise<NostrEvent[]> {
+    const must: Record<string, unknown>[] = [];
+
+    // Apply basic filters (everything except search)
+    if (filter.ids && filter.ids.length > 0) {
+      must.push({ terms: { id: filter.ids } });
+    }
+    if (filter.authors && filter.authors.length > 0) {
+      must.push({ terms: { pubkey: filter.authors } });
+    }
+    if (filter.kinds && filter.kinds.length > 0) {
+      must.push({ terms: { kind: filter.kinds } });
+    }
+    if (filter.since || filter.until) {
+      const range: Record<string, number> = {};
+      if (filter.since) range.gte = filter.since;
+      if (filter.until) range.lte = filter.until;
+      must.push({ range: { created_at: range } });
+    }
+
+    // Tag filters
+    for (const [key, values] of Object.entries(filter)) {
+      if (key.startsWith("#") && Array.isArray(values) && values.length > 0) {
+        const tagName = key.substring(1);
+        const commonTags = new Set(["e", "p", "a", "d", "t", "r", "g"]);
+        if (commonTags.has(tagName)) {
+          must.push({ terms: { [`tag_${tagName}`]: values } });
+        } else {
+          must.push({
+            nested: {
+              path: "tags_flat",
+              query: {
+                bool: {
+                  must: [
+                    { term: { "tags_flat.name": tagName } },
+                    { terms: { "tags_flat.value": values } },
+                  ],
+                },
+              },
+            },
+          });
+        }
+      }
+    }
+
+    // Full-text search if present
+    if (filter.search) {
+      const { searchText } = this.parseSearchExtensions(filter.search);
+      if (searchText.trim()) {
+        must.push({
+          match: {
+            content: {
+              query: searchText,
+              operator: "and",
+              fuzziness: "AUTO",
+            },
+          },
+        });
+      }
+    }
+
+    const baseQuery = must.length > 0 ? { bool: { must } } : { match_all: {} };
+
+    try {
+      switch (sortType) {
+        case "top":
+          return await this.queryTop(baseQuery, filter, limit);
+        case "hot":
+          return await this.queryHot(baseQuery, filter, limit);
+        case "controversial":
+          return await this.queryControversial(baseQuery, filter, limit);
+        case "rising":
+          return await this.queryRising(baseQuery, filter, limit);
+        default:
+          return [];
+      }
+    } catch (error) {
+      console.error(`Query failed for sort:${sortType}:`, error);
+      return [];
+    }
+  }
+
+  /**
+   * Query top events (most referenced)
+   */
+  private async queryTop(
+    baseQuery: Record<string, unknown>,
+    filter: NostrFilter,
+    limit: number,
+  ): Promise<NostrEvent[]> {
+    // Build aggregation query for events that reference others
+    const aggMust: Record<string, unknown>[] = [
+      { exists: { field: "tag_e" } },
+    ];
+
+    // Apply time range to referencing events if specified
+    if (filter.since || filter.until) {
+      const range: Record<string, number> = {};
+      if (filter.since) range.gte = filter.since;
+      if (filter.until) range.lte = filter.until;
+      aggMust.push({ range: { created_at: range } });
+    }
+
+    // First, find events with most references using aggregation
+    const aggsResponse = await this.client.search({
+      index: this.indexName,
+      body: {
+        size: 0,
+        query: {
+          bool: {
+            must: aggMust,
+          },
+        },
+        aggs: {
+          top_events: {
+            terms: {
+              field: "tag_e",
+              size: Math.max(limit * 10, 1000), // Get many candidates for filtering
+              order: { _count: "desc" },
+            },
+          },
+        },
+      },
+    });
+
+    const aggregations = aggsResponse.body.aggregations as
+      | AggregationResponse
+      | undefined;
+    const buckets = aggregations?.top_events?.buckets || [];
+
+    if (buckets.length === 0) {
+      return [];
+    }
+
+    const eventIds = buckets.map((b) => b.key);
+
+    // Fetch the actual events and apply remaining filters
+    const fetchQuery: Record<string, unknown> = {
+      bool: {
+        must: [
+          { terms: { id: eventIds } },
+          baseQuery,
+        ],
+      },
+    };
+
+    const eventsResponse = await this.client.search({
+      index: this.indexName,
+      body: {
+        query: fetchQuery,
+        size: Math.min(eventIds.length, 5000), // Fetch all candidates, up to 5000
+        _source: [
+          "id",
+          "pubkey",
+          "created_at",
+          "kind",
+          "tags",
+          "content",
+          "sig",
+        ],
+      },
+    });
+
+    // Create a reference count map
+    const refCountMap = new Map<string, number>(
+      buckets.map((b) => [b.key, b.doc_count]),
+    );
+
+    // Sort by reference count
+    const events = eventsResponse.body.hits.hits
+      .filter((hit) => hit._source !== undefined)
+      .map((hit) => this.documentToEvent(hit._source as NostrEventDocument))
+      .sort((a, b) => {
+        const aCount = refCountMap.get(a.id) || 0;
+        const bCount = refCountMap.get(b.id) || 0;
+        return bCount - aCount;
+      });
+
+    return events.slice(0, limit);
+  }
+
+  /**
+   * Query hot events (recent + referenced)
+   * Hot score = reference_count * recency_factor
+   * Recency factor decays exponentially with age
+   */
+  private async queryHot(
+    baseQuery: Record<string, unknown>,
+    filter: NostrFilter,
+    limit: number,
+  ): Promise<NostrEvent[]> {
+    const now = Math.floor(Date.now() / 1000);
+    const timeWindow = 7 * 24 * 60 * 60; // 7 days in seconds
+
+    // Find events with references in recent time window
+    const since = filter.since || (now - timeWindow);
+    const until = filter.until || now;
+
+    const aggsResponse = await this.client.search({
+      index: this.indexName,
+      body: {
+        size: 0,
+        query: {
+          bool: {
+            must: [
+              { exists: { field: "tag_e" } },
+              { range: { created_at: { gte: since, lte: until } } },
+            ],
+          },
+        },
+        aggs: {
+          hot_events: {
+            terms: {
+              field: "tag_e",
+              size: limit * 2,
+              order: { _count: "desc" },
+            },
+          },
+        },
+      },
+    });
+
+    const aggregations = aggsResponse.body.aggregations as
+      | AggregationResponse
+      | undefined;
+    const buckets = aggregations?.hot_events?.buckets || [];
+
+    if (buckets.length === 0) {
+      return [];
+    }
+
+    const eventIds = buckets.map((b) => b.key);
+
+    // Fetch the actual events
+    const fetchQuery: Record<string, unknown> = {
+      bool: {
+        must: [
+          { terms: { id: eventIds } },
+          baseQuery,
+        ],
+      },
+    };
+
+    const eventsResponse = await this.client.search({
+      index: this.indexName,
+      body: {
+        query: fetchQuery,
+        size: Math.min(eventIds.length, 5000), // Fetch all candidates, up to 5000
+        _source: [
+          "id",
+          "pubkey",
+          "created_at",
+          "kind",
+          "tags",
+          "content",
+          "sig",
+        ],
+      },
+    });
+
+    // Calculate hot scores
+    const refCountMap = new Map<string, number>(
+      buckets.map((b) => [b.key, b.doc_count]),
+    );
+
+    const events = eventsResponse.body.hits.hits
+      .filter((hit) => hit._source !== undefined)
+      .map((hit) => {
+        const event = this.documentToEvent(hit._source as NostrEventDocument);
+        const refCount = refCountMap.get(event.id) || 0;
+        const ageInSeconds = now - event.created_at;
+        const ageInHours = ageInSeconds / 3600;
+
+        // Hot score with exponential decay (half-life of 24 hours)
+        const decayFactor = Math.pow(0.5, ageInHours / 24);
+        const hotScore = refCount * decayFactor;
+
+        return { event, hotScore };
+      })
+      .sort((a, b) => b.hotScore - a.hotScore)
+      .map((item) => item.event)
+      .slice(0, limit);
+
+    return events;
+  }
+
+  /**
+   * Query controversial events (high engagement with mixed reactions)
+   * Controversial score = min(positive, negative) * total_engagement
+   * This rewards events with balanced but high engagement
+   */
+  private async queryControversial(
+    baseQuery: Record<string, unknown>,
+    filter: NostrFilter,
+    limit: number,
+  ): Promise<NostrEvent[]> {
+    const now = Math.floor(Date.now() / 1000);
+    const timeWindow = 7 * 24 * 60 * 60; // 7 days
+    const since = filter.since || (now - timeWindow);
+    const until = filter.until || now;
+
+    // Get events with both positive (kind 7 with +) and negative (kind 7 with -) reactions
+    const aggsResponse = await this.client.search({
+      index: this.indexName,
+      body: {
+        size: 0,
+        query: {
+          bool: {
+            must: [
+              { exists: { field: "tag_e" } },
+              { range: { created_at: { gte: since, lte: until } } },
+            ],
+          },
+        },
+        aggs: {
+          referenced_events: {
+            terms: {
+              field: "tag_e",
+              size: limit * 3,
+            },
+            aggs: {
+              reaction_kinds: {
+                filter: {
+                  term: { kind: 7 }, // Reactions
+                },
+                aggs: {
+                  reactions: {
+                    terms: {
+                      field: "content.keyword",
+                      size: 10,
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const aggregations = aggsResponse.body.aggregations as
+      | AggregationResponse
+      | undefined;
+    const buckets = (aggregations?.referenced_events?.buckets ||
+      []) as NestedAggregationBucket[];
+
+    // Calculate controversy scores
+    const controversyScores: Array<{ eventId: string; score: number }> = [];
+
+    for (const bucket of buckets) {
+      const eventId = bucket.key;
+      const reactionBuckets = bucket.reaction_kinds?.reactions?.buckets || [];
+
+      let positive = 0;
+      let negative = 0;
+
+      for (const reactionBucket of reactionBuckets) {
+        const reaction = reactionBucket.key;
+        const count = reactionBucket.doc_count;
+
+        if (reaction === "+" || reaction === "❤️" || reaction === "🤙") {
+          positive += count;
+        } else if (reaction === "-" || reaction === "👎") {
+          negative += count;
+        }
+      }
+
+      const total = positive + negative;
+      if (total > 0) {
+        // Controversy = min(pos, neg) * sqrt(total)
+        // This rewards balanced reactions with high total engagement
+        const score = Math.min(positive, negative) * Math.sqrt(total);
+        controversyScores.push({ eventId, score });
+      }
+    }
+
+    // Sort by controversy score
+    controversyScores.sort((a, b) => b.score - a.score);
+
+    if (controversyScores.length === 0) {
+      return [];
+    }
+
+    // Get all event IDs (don't slice yet - we need to apply baseQuery filters first)
+    const topEventIds = controversyScores.map((item) => item.eventId);
+
+    // Fetch the actual events
+    const fetchQuery: Record<string, unknown> = {
+      bool: {
+        must: [
+          { terms: { id: topEventIds } },
+          baseQuery,
+        ],
+      },
+    };
+
+    const eventsResponse = await this.client.search({
+      index: this.indexName,
+      body: {
+        query: fetchQuery,
+        size: Math.min(topEventIds.length, 5000), // Fetch all candidates, up to 5000
+        _source: [
+          "id",
+          "pubkey",
+          "created_at",
+          "kind",
+          "tags",
+          "content",
+          "sig",
+        ],
+      },
+    });
+
+    // Maintain the sort order
+    const eventMap = new Map(
+      eventsResponse.body.hits.hits
+        .filter((hit) => hit._source !== undefined)
+        .map((hit) => [
+          (hit._source as NostrEventDocument).id,
+          this.documentToEvent(hit._source as NostrEventDocument),
+        ]),
+    );
+
+    // Return events in controversy score order, limited to requested limit
+    return topEventIds
+      .map((id) => eventMap.get(id))
+      .filter((e): e is NostrEvent => e !== undefined)
+      .slice(0, limit);
+  }
+
+  /**
+   * Query rising events (recently created, gaining engagement quickly)
+   * Rising score = reference_count / age_in_hours
+   */
+  private async queryRising(
+    baseQuery: Record<string, unknown>,
+    filter: NostrFilter,
+    limit: number,
+  ): Promise<NostrEvent[]> {
+    const now = Math.floor(Date.now() / 1000);
+    const timeWindow = 48 * 60 * 60; // 48 hours for rising events
+
+    const since = filter.since || (now - timeWindow);
+    const until = filter.until || now;
+
+    // Find recently referenced events
+    const aggsResponse = await this.client.search({
+      index: this.indexName,
+      body: {
+        size: 0,
+        query: {
+          bool: {
+            must: [
+              { exists: { field: "tag_e" } },
+              { range: { created_at: { gte: since, lte: until } } },
+            ],
+          },
+        },
+        aggs: {
+          rising_events: {
+            terms: {
+              field: "tag_e",
+              size: limit * 2,
+              order: { _count: "desc" },
+            },
+          },
+        },
+      },
+    });
+
+    const aggregations = aggsResponse.body.aggregations as
+      | AggregationResponse
+      | undefined;
+    const buckets = aggregations?.rising_events?.buckets || [];
+
+    if (buckets.length === 0) {
+      return [];
+    }
+
+    const eventIds = buckets.map((b) => b.key);
+
+    // Fetch the actual events
+    const fetchQuery: Record<string, unknown> = {
+      bool: {
+        must: [
+          { terms: { id: eventIds } },
+          baseQuery,
+        ],
+      },
+    };
+
+    const eventsResponse = await this.client.search({
+      index: this.indexName,
+      body: {
+        query: fetchQuery,
+        size: Math.min(eventIds.length, 5000), // Fetch all candidates, up to 5000
+        _source: [
+          "id",
+          "pubkey",
+          "created_at",
+          "kind",
+          "tags",
+          "content",
+          "sig",
+        ],
+      },
+    });
+
+    // Calculate rising scores
+    const refCountMap = new Map<string, number>(
+      buckets.map((b) => [b.key, b.doc_count]),
+    );
+
+    const events = eventsResponse.body.hits.hits
+      .filter((hit) => hit._source !== undefined)
+      .map((hit) => {
+        const event = this.documentToEvent(hit._source as NostrEventDocument);
+        const refCount = refCountMap.get(event.id) || 0;
+        const ageInSeconds = now - event.created_at;
+        const ageInHours = Math.max(ageInSeconds / 3600, 0.1); // Minimum 0.1 hours
+
+        // Rising score = references per hour
+        const risingScore = refCount / ageInHours;
+
+        return { event, risingScore };
+      })
+      .sort((a, b) => b.risingScore - a.risingScore)
+      .map((item) => item.event)
+      .slice(0, limit);
+
+    return events;
   }
 
   /**
@@ -440,6 +1077,15 @@ export class OpenSearchRelay implements NRelay, AsyncDisposable {
     _opts?: { signal?: AbortSignal },
   ): Promise<void> {
     throw new Error("Event deletion not supported");
+  }
+
+  /**
+   * Force refresh the index (for testing)
+   */
+  async refresh(): Promise<void> {
+    await this.client.indices.refresh({
+      index: this.indexName,
+    });
   }
 
   /**

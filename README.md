@@ -80,6 +80,9 @@ This architecture solves the validation bottleneck by:
   indexing
 - **Full-Text Search**: Native NIP-50 support with relevance scoring and fuzzy
   matching
+- **Advanced Sort Modes**: NIP-50 extensions for `sort:hot`, `sort:top`,
+  `sort:controversial`, and `sort:rising` to discover trending and popular
+  content
 - **Comprehensive Tag Indexing**: All tags indexed for fast filtering, including
   multi-letter tags
 - **Bulk Insert**: Storage workers use OpenSearch bulk API for high-throughput
@@ -372,6 +375,31 @@ The index is automatically created by running `deno task migrate`.
   sharding
 - **Storage**: Time-based sharding available for efficient data management
 - **Tag Indexing**: All tags fully indexed for O(log n) lookups
+
+## NIP-50 Search Extensions
+
+This relay implements advanced NIP-50 search extensions for discovering trending
+and popular content.
+
+**Supported sort modes:**
+
+- `sort:hot` - Recent events with high engagement (recency + popularity)
+- `sort:top` - Most referenced events (all-time or within time range)
+- `sort:controversial` - Events with mixed positive/negative reactions
+- `sort:rising` - Recently created events gaining engagement quickly
+
+**Example queries:**
+
+```json
+// Find the hottest bitcoin discussions
+{"kinds": [1], "search": "sort:hot bitcoin", "limit": 50}
+
+// Top events from the last 24 hours
+{"kinds": [1], "since": 1700000000, "search": "sort:top", "limit": 100}
+
+// Rising vegan content
+{"kinds": [1], "search": "sort:rising vegan", "limit": 50}
+```
 
 ## Development
 
