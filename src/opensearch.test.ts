@@ -67,7 +67,7 @@ Deno.test({
   sanitizeResources: false,
   sanitizeOps: false,
   async fn() {
-    await using _relay = await setupRelay();
+    await using relay = await setupRelay();
 
     const config = new Config(Deno.env);
 
@@ -89,10 +89,10 @@ Deno.test({
     const opensearch = new Client(opensearchConfig);
 
     const indexExists = await opensearch.indices.exists({
-      index: "nostr-events",
+      index: relay.testIndexName,
     });
 
-    assertEquals(indexExists.body, true, "nostr-events index should exist");
+    assertEquals(indexExists.body, true, `${relay.testIndexName} should exist`);
   },
 });
 
