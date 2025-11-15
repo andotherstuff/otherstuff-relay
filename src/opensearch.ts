@@ -1,5 +1,6 @@
 import type { Client } from "@opensearch-project/opensearch";
-import type {
+import {
+  NIP50,
   NostrEvent,
   NostrFilter,
   NostrRelayCLOSED,
@@ -181,11 +182,16 @@ export class OpenSearchRelay implements NRelay, AsyncDisposable {
 
     // Full-text search (NIP-50)
     if (filter.search) {
+      const tokens = NIP50.parseInput(filter.search);
+      const searchText = tokens.filter((t) => typeof t === "string").join(" ");
+
+      // TODO: Support NIP-50 search extensions
+
       // Use match query with boosting for better relevance
       must.push({
         match: {
           content: {
-            query: filter.search,
+            query: searchText,
             operator: "and",
             fuzziness: "AUTO",
           },
