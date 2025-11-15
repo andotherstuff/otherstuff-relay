@@ -1,14 +1,14 @@
 # Otherstuff Relay
 
-A high-performance Nostr relay server built with Deno and ClickHouse, optimized
-for high-throughput event processing and real-time data delivery.
+A high-performance Nostr relay server built with Deno and OpenSearch, optimized
+for high-throughput event processing, real-time data delivery, and full-text search.
 
 ## Overview
 
 This relay server combines the lightweight efficiency of Deno with the
-analytical power of ClickHouse to deliver a scalable Nostr infrastructure
-solution. The architecture prioritizes performance, reliability, and operational
-simplicity.
+search power of OpenSearch/ElasticSearch to deliver a scalable Nostr infrastructure
+solution with native NIP-50 full-text search support. The architecture prioritizes 
+performance, reliability, and operational simplicity.
 
 ## Architecture
 
@@ -24,9 +24,9 @@ simplicity.
 - **Relay Workers**: N parallel processes that validate events and handle Nostr
   protocol logic
 - **Storage Workers**: Dedicated batch processors that pull validated events
-  from Redis and insert into ClickHouse
-- **ClickHouse Database**: Columnar database optimized for time-series event
-  storage and analytical queries
+  from Redis and insert into OpenSearch using bulk API
+- **OpenSearch Database**: Full-text search engine optimized for fast queries,
+  full-text search (NIP-50), and comprehensive tag indexing
 - **WebSocket Protocol**: Real-time bidirectional communication with Nostr
   clients
 - **Prometheus Metrics**: Comprehensive monitoring and performance tracking
@@ -46,8 +46,8 @@ Relay Workers (N parallel) ← Validate in parallel
 Redis: nostr:events:queue
     ↓ (Batch pull)
 Storage Workers (M parallel)
-    ↓ (Batch insert)
-ClickHouse
+    ↓ (Bulk insert - up to 1000 events/batch)
+OpenSearch
 ```
 
 This architecture solves the validation bottleneck by:
@@ -57,11 +57,13 @@ This architecture solves the validation bottleneck by:
 2. **Fast message queueing**: WebSocket server queues raw messages without
    blocking (microseconds)
 3. **Batch storage**: Storage workers pull 1000 validated events and insert in
-   one ClickHouse request
+   one OpenSearch bulk request
 4. **Horizontal scaling**: 16 Deno instances + N relay workers + M storage
    workers = massive parallelism
 5. **Shared state via Redis**: Workers coordinate through Redis (subscriptions,
    responses)
+6. **Optimized indexing**: All tags are indexed for fast queries, including
+   multi-letter tags
 
 ## Features
 
@@ -73,8 +75,12 @@ This architecture solves the validation bottleneck by:
   protect system resources
 - **Fast Validation**: Rapid rejection of invalid events to minimize processing
   overhead
-- **Direct Database Access**: Efficient direct queries to ClickHouse for optimal
-  performance
+- **Optimized Queries**: OpenSearch provides sub-millisecond queries with proper
+  indexing
+- **Full-Text Search**: Native NIP-50 support with relevance scoring and fuzzy matching
+- **Comprehensive Tag Indexing**: All tags indexed for fast filtering, including
+  multi-letter tags
+- **Bulk Insert**: Storage workers use OpenSearch bulk API for high-throughput writes
 - **Event Age Filtering**: Configurable age-based filtering prevents
   broadcasting of stale events to subscribers, with special handling for
   ephemeral events
@@ -100,7 +106,7 @@ This architecture solves the validation bottleneck by:
 ### Prerequisites
 
 - **Deno** 1.40 or later
-- **ClickHouse** server (local or remote)
+- **OpenSearch** or **ElasticSearch** server (local or remote)
 - **Redis** server (local or remote)
 
 ### Installation
@@ -131,15 +137,18 @@ PORT=8000                                    # HTTP server port
 #### Database Configuration
 
 ```bash
-# ClickHouse connection URL
-# Format: http://[user[:password]@]host[:port]/database
-# If no database is specified, defaults to 'nostr'
-DATABASE_URL=http://localhost:8123/nostr
+# OpenSearch/ElasticSearch connection URL
+# Format: http://[host]:[port] or https://[host]:[port]
+OPENSEARCH_URL=http://localhost:9200
 
 # Examples:
-# DATABASE_URL=http://default:password@localhost:8123/nostr
-# DATABASE_URL=http://user@clickhouse.example.com:8123/my_relay_db
-# DATABASE_URL=http://localhost:8123  # Uses default 'nostr' database
+# OPENSEARCH_URL=http://localhost:9200
+# OPENSEARCH_URL=https://opensearch.example.com:9200
+
+# OpenSearch/ElasticSearch authentication (optional)
+# Leave blank if no authentication is required
+OPENSEARCH_USERNAME=
+OPENSEARCH_PASSWORD=
 
 # Optional: Source relay identifier for tracking event origins
 RELAY_SOURCE=wss://your-relay-domain.com
@@ -169,7 +178,19 @@ REDIS_URL=redis://localhost:6379
 BROADCAST_MAX_AGE=300
 ```
 
-### Running the Server
+### Database Setup
+
+Before running the server, initialize the OpenSearch index:
+
+```bash
+deno task migrate
+```
+
+This creates the `nostr-events` index with optimized mappings for:
+- Fast tag filtering (all tags indexed)
+- Full-text search on content (NIP-50)
+- Time-based queries
+- Relevance scoring
 
 ### Running the Server
 
@@ -222,57 +243,47 @@ NUM_RELAY_WORKERS=8 NUM_STORAGE_WORKERS=4 deno task start
 
 ## Database Schema
 
-The ClickHouse schema is optimized for Nostr event patterns and analytical
-queries:
+The OpenSearch index is optimized for Nostr event patterns with comprehensive
+tag indexing and full-text search:
 
-### Main Events Table
+### Index Mapping
 
-```sql
-CREATE TABLE events_local (
-    id String COMMENT '32-byte hex event ID (SHA-256 hash)',
-    pubkey String COMMENT '32-byte hex public key of event creator',
-    created_at DateTime COMMENT 'Unix timestamp when event was created',
-    kind UInt16 COMMENT 'Event kind (0-65535, see NIP-01)',
-    content String COMMENT 'Event content (arbitrary string, format depends on kind)',
-    sig String COMMENT '64-byte hex Schnorr signature',
-    tags Array(Array(String)) COMMENT 'Nested array of tags',
-    indexed_at DateTime DEFAULT now() COMMENT 'When this event was indexed into Clickhouse',
-    relay_source String DEFAULT '' COMMENT 'Source relay URL (e.g., wss://relay.damus.io)',
-    PRIMARY KEY (id),
-    INDEX idx_kind kind TYPE minmax GRANULARITY 4,
-    INDEX idx_pubkey pubkey TYPE bloom_filter(0.01) GRANULARITY 4
-) ENGINE = ReplacingMergeTree(indexed_at)
-ORDER BY (created_at, kind, pubkey)
-PARTITION BY toYYYYMM(created_at)
-```
+The `nostr-events` index includes:
 
-### Tag Optimization
+**Core Fields:**
+- `id` (keyword) - Event ID, used as document ID
+- `pubkey` (keyword) - Author's public key
+- `created_at` (long) - Unix timestamp
+- `kind` (integer) - Event kind
+- `content` (text) - Full-text searchable content with custom analyzer
+- `sig` (keyword) - Event signature
+- `tags` (keyword array) - Original tag structure
 
-A materialized view automatically flattens tags for fast queries:
+**Optimized Tag Fields:**
+- `tag_e` (keyword array) - Event references
+- `tag_p` (keyword array) - Pubkey references
+- `tag_a` (keyword array) - Address references
+- `tag_d` (keyword array) - Identifier tags
+- `tag_t` (keyword array) - Hashtags
+- `tag_r` (keyword array) - URL references
+- `tag_g` (keyword array) - Geohash tags
 
-```sql
-CREATE MATERIALIZED VIEW event_tags_flat
-AS SELECT
-    id as event_id,
-    pubkey,
-    created_at,
-    kind,
-    arrayJoin(tags) as tag_array,
-    tag_array[1] as tag_name,
-    tag_array[2] as tag_value_1
-FROM events_local
-```
+**Generic Tag Storage:**
+- `tags_flat` (nested) - All other tags indexed as `{name, value}` pairs
 
-### Statistics Views
+**Metadata:**
+- `indexed_at` (long) - Indexing timestamp
+- `relay_source` (keyword) - Source relay URL
 
-Additional views provide analytics and monitoring:
+### Query Performance
 
-- `event_stats` - Daily event counts by kind
-- `relay_stats` - Source relay statistics
-- `tag_stats` - Tag frequency analysis
+- **Tag queries**: O(log n) lookup using keyword fields
+- **Multi-letter tags**: Fully supported via nested `tags_flat` structure
+- **Full-text search**: Native NIP-50 support with relevance scoring
+- **Time-range queries**: Optimized with `created_at` field
+- **Bulk inserts**: Up to 1000 events per batch using bulk API
 
-The tables are automatically created on server startup. Events are inserted in
-batches by the worker process.
+The index is automatically created by running `deno task migrate`.
 
 ## API Endpoints
 
@@ -300,7 +311,9 @@ batches by the worker process.
 
 - **Event Ingestion**: 10,000+ events/second with parallel validation
 - **Validation**: Scales linearly with number of relay workers
-- **Query Response**: Sub-millisecond for indexed queries
+- **Bulk Inserts**: 1000 events per batch using OpenSearch bulk API
+- **Query Response**: Sub-100ms for most queries with proper indexing
+- **Full-Text Search**: Native relevance scoring with fuzzy matching
 - **Concurrent Connections**: 10,000+ simultaneous WebSocket connections
 
 ### Resource Efficiency
@@ -309,14 +322,16 @@ batches by the worker process.
 - **CPU Utilization**: Distributed across relay workers for parallel validation
 - **Database Connections**: Pooled connections per storage worker
 - **Queue Latency**: < 1ms for message queueing, ~10ms for response delivery
+- **Index Refresh**: 5-second refresh interval balances write performance with search freshness
 
 ### Scalability
 
 - **Parallel Validation**: N relay workers process events concurrently
 - **Horizontal Scaling**: Multiple server instances + workers behind load
   balancer
-- **Database Scaling**: ClickHouse cluster support for high availability
-- **Storage**: Partitioned data enables efficient archival and retention
+- **Database Scaling**: OpenSearch cluster support for high availability and sharding
+- **Storage**: Time-based sharding available for efficient data management
+- **Tag Indexing**: All tags fully indexed for O(log n) lookups
 
 ## Development
 
@@ -326,8 +341,10 @@ batches by the worker process.
 src/
 ├── server.ts         # HTTP server and WebSocket handling
 ├── relay-worker.ts   # Relay worker for parallel message processing & validation
-├── storage-worker.ts # Storage worker for batch ClickHouse inserts
+├── storage-worker.ts # Storage worker for batch OpenSearch inserts
+├── opensearch.ts     # OpenSearch relay implementation with NIP-50 support
 ├── start.ts          # Process manager to run all components
+├── migrate.ts        # Database migration script
 ├── config.ts         # Environment configuration
 └── metrics.ts        # Prometheus metrics collection
 ```
@@ -364,7 +381,9 @@ CMD ["deno", "task", "start"]
 - **Reverse Proxy**: Use Nginx or similar for SSL termination
 - **Monitoring**: Configure Prometheus and Grafana for metrics visualization
 - **Logging**: Implement centralized log aggregation
-- **Backups**: Regular ClickHouse data backups for disaster recovery
+- **Backups**: Regular OpenSearch snapshots for disaster recovery
+- **Index Management**: Configure index lifecycle policies for data retention
+- **Security**: Enable OpenSearch security features and authentication in production
 
 ## License
 
