@@ -133,9 +133,6 @@ app.get("/", (c) => {
     try {
       await redis.del([
         `nostr:conn:${connId}`,
-        `nostr:sub:counts:${connId}`,
-        `nostr:sub:limits:${connId}`,
-        `nostr:sub:eose:${connId}`,
         queueKey,
       ]);
     } catch (err) {
