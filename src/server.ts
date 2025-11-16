@@ -63,15 +63,11 @@ app.get("/", (c) => {
   let responsePoller: number | null = null;
   const queueKey = `nostr:responses:${connId}`;
 
-  socket.onopen = async () => {
+  socket.onopen = () => {
     metrics.incrementConnections();
     metrics.incrementWebSocketOpens();
     connectionsGauge.inc();
     webSocketOpensCounter.inc();
-
-    // Set initial TTL on response queue as safety net for orphaned queues
-    // This will be reset whenever we successfully consume messages
-    await redis.expire(queueKey, 60);
 
     // Start polling for responses from relay workers
     responsePoller = setInterval(async () => {
@@ -84,7 +80,7 @@ app.get("/", (c) => {
         const responses = await redis.lPopCount(queueKey, 100);
         if (responses && responses.length > 0) {
           // Reset TTL since we're actively consuming - this is a live connection
-          await redis.expire(queueKey, 60);
+          await redis.expire(queueKey, 5);
 
           for (const responseJson of responses) {
             try {
