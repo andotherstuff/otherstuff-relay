@@ -49,7 +49,6 @@ const metrics = getMetricsInstance();
 const relay = new OpenSearchRelay(opensearch);
 
 const WORKER_ID = crypto.randomUUID().slice(0, 8);
-console.log(`🔧 Storage worker ${WORKER_ID} started, waiting for events...`);
 
 const BATCH_SIZE = 1000; // Number of events to batch before inserting
 const POLL_INTERVAL_MS = 10; // How often to check Redis when queue is empty

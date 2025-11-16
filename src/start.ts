@@ -48,28 +48,32 @@ console.log(
 );
 
 // Start relay workers (handle validation and message processing)
-for (let i = 0; i < NUM_RELAY_WORKERS; i++) {
-  const worker = new Deno.Command("deno", {
-    args: ["task", "relay-worker"],
-    stdout: "inherit",
-    stderr: "inherit",
-  }).spawn();
+(async () => {
+  for (let i = 0; i < NUM_RELAY_WORKERS; i++) {
+    const worker = new Deno.Command("deno", {
+      args: ["task", "relay-worker"],
+      stdout: "inherit",
+      stderr: "inherit",
+    }).spawn();
 
-  processes.push(worker);
-  console.log(`✅ Relay worker ${i + 1} started (PID: ${worker.pid})`);
-}
+    processes.push(worker);
+    await new Promise((resolve) => setTimeout(resolve, 500)); // Stagger startups
+  }
+})();
 
 // Start storage workers (handle batch inserts to OpenSearch)
-for (let i = 0; i < NUM_STORAGE_WORKERS; i++) {
-  const worker = new Deno.Command("deno", {
-    args: ["task", "storage-worker"],
-    stdout: "inherit",
-    stderr: "inherit",
-  }).spawn();
+(async () => {
+  for (let i = 0; i < NUM_STORAGE_WORKERS; i++) {
+    const worker = new Deno.Command("deno", {
+      args: ["task", "storage-worker"],
+      stdout: "inherit",
+      stderr: "inherit",
+    }).spawn();
 
-  processes.push(worker);
-  console.log(`✅ Storage worker ${i + 1} started (PID: ${worker.pid})`);
-}
+    processes.push(worker);
+    await new Promise((resolve) => setTimeout(resolve, 500)); // Stagger startups
+  }
+})();
 
 // Start server
 const server = new Deno.Command("deno", {

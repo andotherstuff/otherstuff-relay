@@ -63,7 +63,6 @@ const wasmInitialized = (async () => {
 const relay = new OpenSearchRelay(opensearch);
 
 const WORKER_ID = crypto.randomUUID().slice(0, 8);
-console.log(`🔧 Relay worker ${WORKER_ID} started, waiting for messages...`);
 
 // Helper function to check if an event is ephemeral
 function isEphemeral(kind: number): boolean {
