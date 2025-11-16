@@ -141,41 +141,48 @@ async function monitorService(service: Service) {
   }
 }
 
-// Start relay workers (handle validation and message processing)
-await (async () => {
-  const reportInterval = Math.max(1, Math.floor(NUM_RELAY_WORKERS / 10)); // Report every 10%
-  for (let i = 0; i < NUM_RELAY_WORKERS; i++) {
-    const service = startService("relay-worker", i + 1, true);
-    services.push(service);
-    await new Promise((resolve) => setTimeout(resolve, 50)); // Stagger startups
+// Start all services concurrently
+await Promise.all([
+  // Start relay workers (handle validation and message processing)
+  (async () => {
+    const reportInterval = Math.max(1, Math.floor(NUM_RELAY_WORKERS / 10)); // Report every 10%
+    for (let i = 0; i < NUM_RELAY_WORKERS; i++) {
+      const service = startService("relay-worker", i + 1, true);
+      services.push(service);
+      await new Promise((resolve) => setTimeout(resolve, 10)); // Stagger startups
 
-    // Report progress
-    if ((i + 1) % reportInterval === 0 || i === NUM_RELAY_WORKERS - 1) {
-      console.log(`🔄 ${i + 1}/${NUM_RELAY_WORKERS} relay workers started`);
+      // Report progress
+      if ((i + 1) % reportInterval === 0 || i === NUM_RELAY_WORKERS - 1) {
+        console.log(`🔄 ${i + 1}/${NUM_RELAY_WORKERS} relay workers started`);
+      }
     }
-  }
-  console.log(`✅ All ${NUM_RELAY_WORKERS} relay workers started`);
-})();
+    console.log(`✅ All ${NUM_RELAY_WORKERS} relay workers started`);
+  })(),
 
-// Start storage workers (handle batch inserts to OpenSearch)
-await (async () => {
-  const reportInterval = Math.max(1, Math.floor(NUM_STORAGE_WORKERS / 10)); // Report every 10%
-  for (let i = 0; i < NUM_STORAGE_WORKERS; i++) {
-    const service = startService("storage-worker", i + 1, true);
-    services.push(service);
-    await new Promise((resolve) => setTimeout(resolve, 50)); // Stagger startups
+  // Start storage workers (handle batch inserts to OpenSearch)
+  (async () => {
+    const reportInterval = Math.max(1, Math.floor(NUM_STORAGE_WORKERS / 10)); // Report every 10%
+    for (let i = 0; i < NUM_STORAGE_WORKERS; i++) {
+      const service = startService("storage-worker", i + 1, true);
+      services.push(service);
+      await new Promise((resolve) => setTimeout(resolve, 10)); // Stagger startups
 
-    // Report progress
-    if ((i + 1) % reportInterval === 0 || i === NUM_STORAGE_WORKERS - 1) {
-      console.log(`🔄 ${i + 1}/${NUM_STORAGE_WORKERS} storage workers started`);
+      // Report progress
+      if ((i + 1) % reportInterval === 0 || i === NUM_STORAGE_WORKERS - 1) {
+        console.log(
+          `🔄 ${i + 1}/${NUM_STORAGE_WORKERS} storage workers started`,
+        );
+      }
     }
-  }
-  console.log(`✅ All ${NUM_STORAGE_WORKERS} storage workers started`);
-})();
+    console.log(`✅ All ${NUM_STORAGE_WORKERS} storage workers started`);
+  })(),
 
-// Start server
-const serverService = startService("server", 0);
-services.push(serverService);
+  // Start server
+  Promise.resolve().then(() => {
+    const serverService = startService("server", 0);
+    services.push(serverService);
+  }),
+]);
 
 // Graceful shutdown handler
 const shutdown = async () => {
