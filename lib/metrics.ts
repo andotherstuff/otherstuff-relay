@@ -45,6 +45,86 @@ export const subscriptionsGauge = new Gauge({
   registers: [register],
 });
 
+// Create all metric objects once to avoid memory leaks
+const eventsReceivedCounter = new Counter({
+  name: "nostr_events_received",
+  help: "Total events received",
+  registers: [register],
+});
+
+const eventsStoredCounter = new Counter({
+  name: "nostr_events_stored",
+  help: "Total events successfully stored",
+  registers: [register],
+});
+
+const eventsFailedCounter = new Counter({
+  name: "nostr_events_failed",
+  help: "Total events failed to store",
+  registers: [register],
+});
+
+const eventsInvalidCounter = new Counter({
+  name: "nostr_events_invalid",
+  help: "Total events invalid",
+  registers: [register],
+});
+
+const eventsRejectedCounter = new Counter({
+  name: "nostr_events_rejected",
+  help: "Total events rejected",
+  registers: [register],
+});
+
+const queriesTotalCounter = new Counter({
+  name: "nostr_queries_total",
+  help: "Total queries processed",
+  registers: [register],
+});
+
+const webSocketOpensCounter = new Counter({
+  name: "nostr_websocket_opens_total",
+  help: "Total WebSocket connections opened",
+  registers: [register],
+});
+
+const webSocketClosesCounter = new Counter({
+  name: "nostr_websocket_closes_total",
+  help: "Total WebSocket connections closed",
+  registers: [register],
+});
+
+const webSocketErrorsCounter = new Counter({
+  name: "nostr_websocket_errors_total",
+  help: "Total WebSocket errors",
+  registers: [register],
+});
+
+const messagesSentCounter = new Counter({
+  name: "nostr_messages_sent_total",
+  help: "Total messages sent to clients",
+  registers: [register],
+});
+
+const messagesReceivedCounter = new Counter({
+  name: "nostr_messages_received_total",
+  help: "Total messages received from clients",
+  registers: [register],
+});
+
+const responsePollerInvocationsCounter = new Counter({
+  name: "nostr_response_poller_invocations_total",
+  help: "Total response poller invocations",
+  registers: [register],
+});
+
+const eventsByKindCounter = new Counter({
+  name: "nostr_events_by_kind_total",
+  help: "Total events received by kind",
+  labelNames: ["kind"],
+  registers: [register],
+});
+
 // Redis-based metrics class
 export class RedisMetrics {
   private redis: RedisClient;
@@ -243,66 +323,9 @@ export function getMetricsInstance(): RedisMetrics {
   return metricsInstance;
 }
 
-// Legacy counter exports for backward compatibility (these will be no-ops)
-export const eventsReceivedCounter = {
-  inc: (delta?: number) =>
-    getMetricsInstance().incrementEventsReceived(delta || 1),
-};
-
-export const eventsStoredCounter = {
-  inc: (delta?: number) =>
-    getMetricsInstance().incrementEventsStored(delta || 1),
-};
-
-export const eventsFailedCounter = {
-  inc: (delta?: number) =>
-    getMetricsInstance().incrementEventsFailed(delta || 1),
-};
-
-export const eventsInvalidCounter = {
-  inc: (delta?: number) =>
-    getMetricsInstance().incrementEventsInvalid(delta || 1),
-};
-
-export const eventsRejectedCounter = {
-  inc: (delta?: number) =>
-    getMetricsInstance().incrementEventsRejected(delta || 1),
-};
-
-export const queriesCounter = {
-  inc: (delta?: number) =>
-    getMetricsInstance().incrementQueriesTotal(delta || 1),
-};
-
-export const webSocketOpensCounter = {
-  inc: (delta?: number) =>
-    getMetricsInstance().incrementWebSocketOpens(delta || 1),
-};
-
-export const webSocketClosesCounter = {
-  inc: (delta?: number) =>
-    getMetricsInstance().incrementWebSocketCloses(delta || 1),
-};
-
-export const webSocketErrorsCounter = {
-  inc: (delta?: number) =>
-    getMetricsInstance().incrementWebSocketErrors(delta || 1),
-};
-
-export const messagesSentCounter = {
-  inc: (delta?: number) =>
-    getMetricsInstance().incrementMessagesSent(delta || 1),
-};
-
-export const messagesReceivedCounter = {
-  inc: (delta?: number) =>
-    getMetricsInstance().incrementMessagesReceived(delta || 1),
-};
-
-export const responsePollerInvocationsCounter = {
-  inc: (delta?: number) =>
-    getMetricsInstance().incrementResponsePollerInvocations(delta || 1),
-};
+// Track the last values we set to avoid resetting counters
+const lastMetricsValues: Record<string, number> = {};
+const lastEventsByKind: Record<string, number> = {};
 
 export async function getMetrics(): Promise<string> {
   // Get metrics instance
@@ -312,98 +335,94 @@ export async function getMetrics(): Promise<string> {
   const allMetrics = await metrics.getAllMetrics();
   const eventsByKind = await metrics.getEventsByKind();
 
-  // Clear the registry to avoid duplicate metrics
-  register.clear();
-
-  // Update gauges with Redis values
+  // Update gauges with Redis values (these can be set directly)
   connectionsGauge.set(allMetrics.connections_active);
   subscriptionsGauge.set(allMetrics.subscriptions_active);
 
-  // Create counters with Redis values
-  new Counter({
-    name: "nostr_events_received",
-    help: "Total events received",
-    registers: [register],
-  }).inc(allMetrics.events_received);
+  // For counters, we need to increment by the delta since last read
+  // Prometheus counters can only go up, so we track what we've already reported
+  const incrementCounter = (
+    counter: Counter,
+    key: string,
+    newValue: number,
+  ) => {
+    const lastValue = lastMetricsValues[key] || 0;
+    const delta = newValue - lastValue;
+    if (delta > 0) {
+      counter.inc(delta);
+      lastMetricsValues[key] = newValue;
+    }
+  };
 
-  new Counter({
-    name: "nostr_events_stored",
-    help: "Total events successfully stored",
-    registers: [register],
-  }).inc(allMetrics.events_stored);
+  incrementCounter(
+    eventsReceivedCounter,
+    "events_received",
+    allMetrics.events_received,
+  );
+  incrementCounter(
+    eventsStoredCounter,
+    "events_stored",
+    allMetrics.events_stored,
+  );
+  incrementCounter(
+    eventsFailedCounter,
+    "events_failed",
+    allMetrics.events_failed,
+  );
+  incrementCounter(
+    eventsInvalidCounter,
+    "events_invalid",
+    allMetrics.events_invalid,
+  );
+  incrementCounter(
+    eventsRejectedCounter,
+    "events_rejected",
+    allMetrics.events_rejected,
+  );
+  incrementCounter(
+    queriesTotalCounter,
+    "queries_total",
+    allMetrics.queries_total,
+  );
+  incrementCounter(
+    webSocketOpensCounter,
+    "websocket_opens",
+    allMetrics.websocket_opens || 0,
+  );
+  incrementCounter(
+    webSocketClosesCounter,
+    "websocket_closes",
+    allMetrics.websocket_closes || 0,
+  );
+  incrementCounter(
+    webSocketErrorsCounter,
+    "websocket_errors",
+    allMetrics.websocket_errors || 0,
+  );
+  incrementCounter(
+    messagesSentCounter,
+    "messages_sent",
+    allMetrics.messages_sent || 0,
+  );
+  incrementCounter(
+    messagesReceivedCounter,
+    "messages_received",
+    allMetrics.messages_received || 0,
+  );
+  incrementCounter(
+    responsePollerInvocationsCounter,
+    "response_poller_invocations",
+    allMetrics.response_poller_invocations || 0,
+  );
 
-  new Counter({
-    name: "nostr_events_failed",
-    help: "Total events failed to store",
-    registers: [register],
-  }).inc(allMetrics.events_failed);
-
-  new Counter({
-    name: "nostr_events_invalid",
-    help: "Total events invalid",
-    registers: [register],
-  }).inc(allMetrics.events_invalid);
-
-  new Counter({
-    name: "nostr_events_rejected",
-    help: "Total events rejected",
-    registers: [register],
-  }).inc(allMetrics.events_rejected);
-
-  new Counter({
-    name: "nostr_queries_total",
-    help: "Total queries processed",
-    registers: [register],
-  }).inc(allMetrics.queries_total);
-
-  // WebSocket lifecycle metrics
-  new Counter({
-    name: "nostr_websocket_opens_total",
-    help: "Total WebSocket connections opened",
-    registers: [register],
-  }).inc(allMetrics.websocket_opens || 0);
-
-  new Counter({
-    name: "nostr_websocket_closes_total",
-    help: "Total WebSocket connections closed",
-    registers: [register],
-  }).inc(allMetrics.websocket_closes || 0);
-
-  new Counter({
-    name: "nostr_websocket_errors_total",
-    help: "Total WebSocket errors",
-    registers: [register],
-  }).inc(allMetrics.websocket_errors || 0);
-
-  // Message and polling metrics
-  new Counter({
-    name: "nostr_messages_sent_total",
-    help: "Total messages sent to clients",
-    registers: [register],
-  }).inc(allMetrics.messages_sent || 0);
-
-  new Counter({
-    name: "nostr_messages_received_total",
-    help: "Total messages received from clients",
-    registers: [register],
-  }).inc(allMetrics.messages_received || 0);
-
-  new Counter({
-    name: "nostr_response_poller_invocations_total",
-    help: "Total response poller invocations",
-    registers: [register],
-  }).inc(allMetrics.response_poller_invocations || 0);
-
-  // Event kind metrics - create a counter for each kind
-  const eventsByKindCounter = new Counter({
-    name: "nostr_events_by_kind_total",
-    help: "Total events received by kind",
-    labelNames: ["kind"],
-    registers: [register],
-  });
-
+  // Update events by kind counter
   for (const [kind, count] of Object.entries(eventsByKind)) {
-    eventsByKindCounter.inc({ kind }, count);
+    const lastCount = lastEventsByKind[kind] || 0;
+    const delta = count - lastCount;
+    if (delta > 0) {
+      eventsByKindCounter.inc({ kind }, delta);
+      lastEventsByKind[kind] = count;
+    }
   }
 
   return await register.metrics();
