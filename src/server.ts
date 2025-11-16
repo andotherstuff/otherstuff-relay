@@ -132,7 +132,7 @@ app.get("/", (c) => {
     // Clean up all connection-related data in Redis with a single command
     try {
       await redis.del([
-        `nostr:subs:${connId}`,
+        `nostr:conn:${connId}`,
         `nostr:sub:counts:${connId}`,
         `nostr:sub:limits:${connId}`,
         `nostr:sub:eose:${connId}`,

@@ -207,7 +207,7 @@ async function handleReq(
   }
 
   // Store in Redis for subscription tracking across workers
-  await redis.hSet(`nostr:subs:${connId}`, subId, JSON.stringify(filters));
+  await redis.hSet(`nostr:conn:${connId}`, subId, JSON.stringify(filters));
 
   // Initialize event count for this subscription
   const effectiveLimit = getEffectiveLimit(filters);
@@ -303,7 +303,7 @@ async function handleReq(
 }
 
 async function handleClose(connId: string, subId: string): Promise<void> {
-  await redis.hDel(`nostr:subs:${connId}`, subId);
+  await redis.hDel(`nostr:conn:${connId}`, subId);
 
   // Clean up tracking data for this subscription
   await redis.hDel(`nostr:sub:counts:${connId}`, subId);
@@ -317,7 +317,7 @@ async function handleClose(connId: string, subId: string): Promise<void> {
 
 // Helper function to count total subscriptions across all connections
 async function countTotalSubscriptions(): Promise<number> {
-  const keys = await redis.keys("nostr:subs:*");
+  const keys = await redis.keys("nostr:conn:*");
   let total = 0;
 
   for (const key of keys) {
@@ -335,10 +335,10 @@ async function broadcastEvent(event: NostrEvent): Promise<void> {
   }
 
   // Get all active connections
-  const connIds = await redis.keys("nostr:subs:*");
+  const connIds = await redis.keys("nostr:conn:*");
 
   for (const key of connIds) {
-    const connId = key.replace("nostr:subs:", "");
+    const connId = key.replace("nostr:conn:", "");
     const subs = await redis.hGetAll(key);
 
     for (const [subId, filtersJson] of Object.entries(subs)) {
