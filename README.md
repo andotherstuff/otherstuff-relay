@@ -205,6 +205,22 @@ This creates the `nostr-events` index with optimized mappings for:
 - Time-based queries
 - Relevance scoring
 
+**Verifying the Setup:**
+
+If you're experiencing issues with tag queries (especially multi-letter tags), verify the index mapping:
+
+```bash
+deno task check-mapping
+```
+
+If the mapping is incorrect, fix it with:
+
+```bash
+deno task fix-mapping
+```
+
+See the [Troubleshooting Guide](TROUBLESHOOTING.md) for more details.
+
 ### Analytics
 
 Find the most popular events based on how many times they are referenced by
@@ -528,6 +544,15 @@ CMD ["deno", "task", "start"]
 
 This project is licensed under the AGPLv3 License. See the LICENSE file for
 details.
+
+## Troubleshooting
+
+If you encounter issues, see the [Troubleshooting Guide](TROUBLESHOOTING.md) for common problems and solutions.
+
+Common issues include:
+- **Nested query errors**: Index mapping issues with `tags_flat` field
+- **Connection errors**: OpenSearch or Redis connectivity problems
+- **Performance issues**: Memory usage, slow queries, or high latency
 
 ## Support
 

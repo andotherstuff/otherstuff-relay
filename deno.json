@@ -2,7 +2,9 @@
   "tasks": {
     "start": "deno run -A --env-file scripts/start.ts",
     "test": "deno test -A --env-file=.env.test",
-    "migrate": "deno run -A --env-file scripts/migrate.ts"
+    "migrate": "deno run -A --env-file scripts/migrate.ts",
+    "check-mapping": "deno run -A --env-file scripts/check-mapping.ts",
+    "fix-mapping": "deno run -A --env-file scripts/fix-mapping.ts"
   },
   "imports": {
     "@/": "./",
