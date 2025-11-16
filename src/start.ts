@@ -57,7 +57,7 @@ console.log(
     }).spawn();
 
     processes.push(worker);
-    await new Promise((resolve) => setTimeout(resolve, 500)); // Stagger startups
+    await new Promise((resolve) => setTimeout(resolve, 100)); // Stagger startups
   }
 })();
 
@@ -71,7 +71,7 @@ console.log(
     }).spawn();
 
     processes.push(worker);
-    await new Promise((resolve) => setTimeout(resolve, 500)); // Stagger startups
+    await new Promise((resolve) => setTimeout(resolve, 100)); // Stagger startups
   }
 })();
 
