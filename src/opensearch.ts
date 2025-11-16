@@ -1273,9 +1273,6 @@ export class OpenSearchRelay implements NRelay, AsyncDisposable {
       }
     }
 
-    // Sort by created_at descending (newest first)
-    allEvents.sort((a, b) => b.created_at - a.created_at);
-
     return allEvents;
   }
 
