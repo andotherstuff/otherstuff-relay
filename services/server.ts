@@ -6,13 +6,7 @@ import {
   getMetrics,
   getMetricsInstance,
   initializeMetrics,
-  messagesReceivedCounter,
-  messagesSentCounter,
   register,
-  responsePollerInvocationsCounter,
-  webSocketClosesCounter,
-  webSocketErrorsCounter,
-  webSocketOpensCounter,
 } from "@/lib/metrics.ts";
 import type { NostrRelayMsg } from "@nostrify/nostrify";
 
@@ -31,6 +25,48 @@ initializeMetrics(redis);
 
 // Get metrics instance for use in this module
 const metrics = getMetricsInstance();
+
+// Local counters for batching metrics updates
+const localMetrics = {
+  websocketOpens: 0,
+  websocketCloses: 0,
+  websocketErrors: 0,
+  messagesSent: 0,
+  messagesReceived: 0,
+};
+
+// Flush local metrics to Redis every 5 seconds
+setInterval(async () => {
+  try {
+    // Update connection count based on current gauge value
+    const currentConnections = await connectionsGauge.get();
+    await metrics.setConnections(currentConnections.values[0]?.value || 0);
+
+    // Flush counters
+    if (localMetrics.websocketOpens > 0) {
+      await metrics.incrementWebSocketOpens(localMetrics.websocketOpens);
+      localMetrics.websocketOpens = 0;
+    }
+    if (localMetrics.websocketCloses > 0) {
+      await metrics.incrementWebSocketCloses(localMetrics.websocketCloses);
+      localMetrics.websocketCloses = 0;
+    }
+    if (localMetrics.websocketErrors > 0) {
+      await metrics.incrementWebSocketErrors(localMetrics.websocketErrors);
+      localMetrics.websocketErrors = 0;
+    }
+    if (localMetrics.messagesSent > 0) {
+      await metrics.incrementMessagesSent(localMetrics.messagesSent);
+      localMetrics.messagesSent = 0;
+    }
+    if (localMetrics.messagesReceived > 0) {
+      await metrics.incrementMessagesReceived(localMetrics.messagesReceived);
+      localMetrics.messagesReceived = 0;
+    }
+  } catch (err) {
+    console.error("Error flushing metrics:", err);
+  }
+}, 5000);
 
 const app = new Hono();
 
@@ -64,17 +100,11 @@ app.get("/", (c) => {
   const queueKey = `nostr:responses:${connId}`;
 
   socket.onopen = () => {
-    metrics.incrementConnections();
-    metrics.incrementWebSocketOpens();
     connectionsGauge.inc();
-    webSocketOpensCounter.inc();
+    localMetrics.websocketOpens++;
 
     // Start polling for responses from relay workers
     responsePoller = setInterval(async () => {
-      // Track poller invocation
-      metrics.incrementResponsePollerInvocations();
-      responsePollerInvocationsCounter.inc();
-
       try {
         // Non-blocking pop of responses
         const responses = await redis.lPopCount(queueKey, 100);
@@ -94,14 +124,11 @@ app.get("/", (c) => {
       } catch (err) {
         console.error("Error polling responses:", err);
       }
-    }, 10); // Poll every 10ms for low latency
+    }, 100); // Poll every 100ms for balanced latency/performance
   };
 
   socket.onmessage = async (e) => {
-    // Track message received
-    metrics.incrementMessagesReceived();
-    messagesReceivedCounter.inc();
-
+    localMetrics.messagesReceived++;
     try {
       // Queue the raw message for relay workers to process
       // Don't parse or validate here - let workers do that in parallel
@@ -119,10 +146,8 @@ app.get("/", (c) => {
   };
 
   socket.onclose = async () => {
-    metrics.incrementConnections(-1);
-    metrics.incrementWebSocketCloses();
     connectionsGauge.dec();
-    webSocketClosesCounter.inc();
+    localMetrics.websocketCloses++;
 
     // Stop polling for responses
     if (responsePoller !== null) {
@@ -138,8 +163,7 @@ app.get("/", (c) => {
   };
 
   socket.onerror = (err) => {
-    metrics.incrementWebSocketErrors();
-    webSocketErrorsCounter.inc();
+    localMetrics.websocketErrors++;
     if (Deno.env.get("DEBUG")) {
       console.error("WebSocket error:", err);
     }
@@ -148,10 +172,7 @@ app.get("/", (c) => {
   function send(msg: NostrRelayMsg) {
     try {
       if (socket.readyState === WebSocket.OPEN) {
-        // Track message sent
-        metrics.incrementMessagesSent();
-        messagesSentCounter.inc();
-
+        localMetrics.messagesSent++;
         socket.send(JSON.stringify(msg));
       }
     } catch (err) {
