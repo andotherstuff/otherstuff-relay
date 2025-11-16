@@ -66,16 +66,12 @@ function startService(
   instance: number,
   silent = false,
 ): Service {
-  // Determine which script to run based on service type
-  const scriptPath = type === "server"
-    ? "services/server.ts"
-    : `services/${type}.ts`;
-
-  // For server, use `deno serve` instead of `deno run`
-  const command = type === "server" ? "serve" : "run";
+  const args = type === "server"
+    ? ["serve", "-A", "--env-file", "--parallel", `services/${type}.ts`]
+    : ["run", "-A", "--env-file", `services/${type}.ts`];
 
   const process = new Deno.Command("deno", {
-    args: [command, "-A", "--env-file", scriptPath],
+    args,
     stdout: "inherit",
     stderr: "inherit",
   }).spawn();
