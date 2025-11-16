@@ -3,7 +3,6 @@
  * Handles message routing, subscription state, and response delivery
  */
 import { NSchema as n } from "@nostrify/nostrify";
-import { matchFilters } from "nostr-tools";
 import { setNostrWasm, verifyEvent } from "nostr-tools/wasm";
 import { initNostrWasm } from "nostr-wasm";
 import { Client } from "@opensearch-project/opensearch";
@@ -167,13 +166,6 @@ async function handleReq(
     filters = filters.slice(0, 10);
   }
 
-  // Store in Redis for subscription tracking across workers
-  await redis.hSet(`nostr:conn:${connId}`, subId, JSON.stringify(filters));
-
-  // Update subscription count
-  const totalSubs = await countTotalSubscriptions();
-  await metrics.setSubscriptions(totalSubs);
-
   // Query historical events for each filter
   const queryPromises = filters.map(async (filter) => {
     try {
@@ -204,54 +196,13 @@ async function handleReq(
   await sendResponse(connId, ["EOSE", subId]);
 }
 
-async function handleClose(connId: string, subId: string): Promise<void> {
-  await redis.hDel(`nostr:conn:${connId}`, subId);
-
-  // Update subscription count
-  const totalSubs = await countTotalSubscriptions();
-  await metrics.setSubscriptions(totalSubs);
+async function handleClose(_connId: string, _subId: string): Promise<void> {
+  // Subscription tracking removed - will be reimplemented differently
 }
 
-// Helper function to count total subscriptions across all connections
-async function countTotalSubscriptions(): Promise<number> {
-  const keys = await redis.keys("nostr:conn:*");
-  let total = 0;
-
-  for (const key of keys) {
-    const subCount = await redis.hLen(key);
-    total += subCount;
-  }
-
-  return total;
-}
-
-async function broadcastEvent(event: NostrEvent): Promise<void> {
-  // Don't broadcast events that are too old
-  if (isEventTooOld(event)) {
-    return;
-  }
-
-  // Get all active connections
-  const connIds = await redis.keys("nostr:conn:*");
-
-  for (const key of connIds) {
-    const connId = key.replace("nostr:conn:", "");
-    const subs = await redis.hGetAll(key);
-
-    for (const [subId, filtersJson] of Object.entries(subs)) {
-      try {
-        if (typeof filtersJson !== "string") continue;
-        const filters = JSON.parse(filtersJson) as NostrFilter[];
-
-        // Check if event matches any filter
-        if (matchFilters(filters, event)) {
-          await sendResponse(connId, ["EVENT", subId, event]);
-        }
-      } catch (error) {
-        console.error("Error broadcasting to subscription:", error);
-      }
-    }
-  }
+async function broadcastEvent(_event: NostrEvent): Promise<void> {
+  // Event broadcasting removed - will be reimplemented differently
+  // The old implementation using nostr:conn:* keys was highly inefficient
 }
 
 async function sendResponse(connId: string, msg: NostrRelayMsg): Promise<void> {

@@ -129,12 +129,9 @@ app.get("/", (c) => {
       clearInterval(responsePoller);
     }
 
-    // Clean up all connection-related data in Redis with a single command
+    // Clean up response queue in Redis
     try {
-      await redis.del([
-        `nostr:conn:${connId}`,
-        queueKey,
-      ]);
+      await redis.del(queueKey);
     } catch (err) {
       console.error("Error cleaning up connection data:", err);
     }
