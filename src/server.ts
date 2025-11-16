@@ -14,6 +14,7 @@ import {
   webSocketErrorsCounter,
   webSocketOpensCounter,
 } from "./metrics.ts";
+import { cleanupConnection } from "./broadcast.ts";
 import type { NostrRelayMsg } from "@nostrify/nostrify";
 
 // Instantiate config with Deno.env
@@ -133,8 +134,12 @@ app.get("/", (c) => {
       clearInterval(responsePoller);
     }
 
-    // Clean up all connection-related data in Redis with a single command
+    // Clean up all connection-related data in Redis
     try {
+      // Clean up broadcast indexes
+      await cleanupConnection(redis, connId);
+
+      // Clean up other connection data
       await redis.del([
         `nostr:subs:${connId}`,
         `nostr:sub:counts:${connId}`,

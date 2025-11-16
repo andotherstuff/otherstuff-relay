@@ -17,11 +17,12 @@ performance, reliability, and operational simplicity.
 
 - **Deno Runtime**: Modern JavaScript/TypeScript runtime with native HTTP server
   capabilities (`deno serve` with 16 parallel instances)
-- **Redis Queues**: High-performance in-memory queues for message passing and
-  coordination
+- **Redis Queues & Indexes**: High-performance in-memory data structures for
+  message passing, coordination, and efficient event broadcasting
   - `nostr:relay:queue`: Raw client messages awaiting processing
   - `nostr:events:queue`: Validated events awaiting batch insertion
   - `nostr:responses:{connId}`: Responses from workers to specific connections
+  - `nostr:subs:by-*`: Inverted indexes for efficient subscription matching
 - **Relay Workers**: N parallel processes that validate events and handle Nostr
   protocol logic
 - **Storage Workers**: Dedicated batch processors that pull validated events
@@ -77,6 +78,9 @@ This architecture solves the validation bottleneck by:
 
 ### Performance
 
+- **Inverted Index Broadcasting**: Efficient event-to-subscription matching
+  using Redis inverted indexes (50-100x faster than naive approach) - see
+  [BROADCASTING.md](./BROADCASTING.md) for details
 - **Intelligent Rate Limiting**: Per-connection limits prevent abuse while
   maintaining throughput
 - **Query Optimization**: Automatic timeouts, size limits, and result caps
@@ -287,6 +291,29 @@ Or set it when running:
 ```bash
 NUM_RELAY_WORKERS=8 NUM_STORAGE_WORKERS=4 deno task start
 ```
+
+## Event Broadcasting
+
+The relay uses an **inverted index** system for efficient event broadcasting to
+subscriptions. Instead of looping through all subscriptions to find matches, we
+index subscriptions by their filter criteria and query these indexes when events
+arrive.
+
+**Key Benefits:**
+
+- 50-100x faster than naive approach
+- Scales to millions of subscriptions
+- O(log N) complexity for index lookups
+- Minimal CPU usage for non-matching events
+
+**How it works:**
+
+1. When a subscription is created, it's indexed by kind, author, and tags
+2. When an event arrives, we query the indexes to find matching subscriptions
+3. Only matched subscriptions receive the event
+
+See [BROADCASTING.md](./BROADCASTING.md) for detailed architecture and
+performance analysis.
 
 ## Database Schema
 

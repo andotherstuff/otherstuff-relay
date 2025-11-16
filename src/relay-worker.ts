@@ -3,7 +3,7 @@
  * Handles message routing, subscription state, and response delivery
  */
 import { NSchema as n } from "@nostrify/nostrify";
-import { getFilterLimit, matchFilters } from "nostr-tools";
+import { getFilterLimit } from "nostr-tools";
 import { setNostrWasm, verifyEvent } from "nostr-tools/wasm";
 import { initNostrWasm } from "nostr-wasm";
 import { Client } from "@opensearch-project/opensearch";
@@ -11,6 +11,11 @@ import { createClient as createRedisClient } from "redis";
 import { Config } from "./config.ts";
 import { getMetricsInstance, initializeMetrics } from "./metrics.ts";
 import { OpenSearchRelay } from "./opensearch.ts";
+import {
+  findMatchingSubscriptions,
+  indexSubscription,
+  unindexSubscription,
+} from "./broadcast.ts";
 import type {
   NostrEvent,
   NostrFilter,
@@ -209,6 +214,9 @@ async function handleReq(
   // Store in Redis for subscription tracking across workers
   await redis.hSet(`nostr:subs:${connId}`, subId, JSON.stringify(filters));
 
+  // Index the subscription for efficient broadcasting
+  await indexSubscription(redis, connId, subId, filters);
+
   // Initialize event count for this subscription
   const effectiveLimit = getEffectiveLimit(filters);
   await redis.hSet(`nostr:sub:counts:${connId}`, subId, "0");
@@ -303,6 +311,18 @@ async function handleReq(
 }
 
 async function handleClose(connId: string, subId: string): Promise<void> {
+  // Get filters before deleting to unindex properly
+  const filtersJson = await redis.hGet(`nostr:subs:${connId}`, subId);
+
+  if (filtersJson) {
+    try {
+      const filters = JSON.parse(filtersJson) as NostrFilter[];
+      await unindexSubscription(redis, connId, subId, filters);
+    } catch (error) {
+      console.error("Failed to unindex subscription:", error);
+    }
+  }
+
   await redis.hDel(`nostr:subs:${connId}`, subId);
 
   // Clean up tracking data for this subscription
@@ -317,10 +337,19 @@ async function handleClose(connId: string, subId: string): Promise<void> {
 
 // Helper function to count total subscriptions across all connections
 async function countTotalSubscriptions(): Promise<number> {
+  // Only count subscription hashes, not index sets
+  // Subscription hashes follow the pattern: nostr:subs:{connId}
+  // Index sets follow the pattern: nostr:subs:by-* or nostr:subs:wildcard
   const keys = await redis.keys("nostr:subs:*");
   let total = 0;
 
   for (const key of keys) {
+    // Skip index keys - they start with "nostr:subs:by-" or are "nostr:subs:wildcard"
+    if (key.startsWith("nostr:subs:by-") || key === "nostr:subs:wildcard") {
+      continue;
+    }
+    
+    // This is a subscription hash
     const subCount = await redis.hLen(key);
     total += subCount;
   }
@@ -334,58 +363,54 @@ async function broadcastEvent(event: NostrEvent): Promise<void> {
     return;
   }
 
-  // Get all active connections
-  const connIds = await redis.keys("nostr:subs:*");
+  // Find matching subscriptions using the indexed approach
+  const matches = await findMatchingSubscriptions(redis, event);
 
-  for (const key of connIds) {
-    const connId = key.replace("nostr:subs:", "");
-    const subs = await redis.hGetAll(key);
+  if (matches.size === 0) {
+    return; // No matching subscriptions
+  }
 
-    for (const [subId, filtersJson] of Object.entries(subs)) {
-      try {
-        if (typeof filtersJson !== "string") continue;
-        const filters = JSON.parse(filtersJson) as NostrFilter[];
+  // Process each matching subscription
+  for (const [subKey, _filters] of matches) {
+    const [connId, subId] = subKey.split(":");
 
-        // Check if event matches any filter
-        if (matchFilters(filters, event)) {
-          // Atomically check count and increment (prevents race condition)
-          const result = await redis.eval(
-            CHECK_AND_INCREMENT_SCRIPT,
-            {
-              keys: [
-                `nostr:sub:counts:${connId}`,
-                `nostr:sub:limits:${connId}`,
-              ],
-              arguments: [subId],
-            },
-          ) as number[];
+    try {
+      // Atomically check count and increment (prevents race condition)
+      const result = await redis.eval(
+        CHECK_AND_INCREMENT_SCRIPT,
+        {
+          keys: [
+            `nostr:sub:counts:${connId}`,
+            `nostr:sub:limits:${connId}`,
+          ],
+          arguments: [subId],
+        },
+      ) as number[];
 
-          const shouldSend = result[0] === 1;
-          const limitReached = result[2] === 1;
+      const shouldSend = result[0] === 1;
+      const limitReached = result[2] === 1;
 
-          // Only send if we're under the limit
-          if (shouldSend) {
-            await sendResponse(connId, ["EVENT", subId, event]);
+      // Only send if we're under the limit
+      if (shouldSend) {
+        await sendResponse(connId, ["EVENT", subId, event]);
 
-            // If we just reached the limit, send EOSE
-            if (limitReached) {
-              // Check if EOSE was already sent
-              const eoseSent = await redis.hGet(
-                `nostr:sub:eose:${connId}`,
-                subId,
-              );
+        // If we just reached the limit, send EOSE
+        if (limitReached) {
+          // Check if EOSE was already sent
+          const eoseSent = await redis.hGet(
+            `nostr:sub:eose:${connId}`,
+            subId,
+          );
 
-              if (!eoseSent) {
-                // Send EOSE immediately - subscription is fulfilled
-                await sendResponse(connId, ["EOSE", subId]);
-                await redis.hSet(`nostr:sub:eose:${connId}`, subId, "1");
-              }
-            }
+          if (!eoseSent) {
+            // Send EOSE immediately - subscription is fulfilled
+            await sendResponse(connId, ["EOSE", subId]);
+            await redis.hSet(`nostr:sub:eose:${connId}`, subId, "1");
           }
         }
-      } catch (error) {
-        console.error("Error broadcasting to subscription:", error);
       }
+    } catch (error) {
+      console.error(`Error broadcasting to subscription ${subKey}:`, error);
     }
   }
 }
