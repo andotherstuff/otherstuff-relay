@@ -1,13 +1,11 @@
 {
   "tasks": {
-    "start": "deno run -A --env-file src/start.ts",
+    "start": "deno run -A --env-file scripts/start.ts",
     "test": "deno test -A --env-file=.env.test",
-    "server": "deno serve -A --env-file src/server.ts",
-    "relay-worker": "deno run -A --env-file src/relay-worker.ts",
-    "storage-worker": "deno run -A --env-file src/storage-worker.ts",
     "migrate": "deno run -A --env-file scripts/migrate.ts"
   },
   "imports": {
+    "@/": "./",
     "@nostrify/nostrify": "jsr:@nostrify/nostrify@^0.46.5",
     "@opensearch-project/opensearch": "npm:@opensearch-project/opensearch@^3.5.1",
     "@std/assert": "jsr:@std/assert@^1.0.15",

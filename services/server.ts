@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { createClient as createRedisClient } from "redis";
-import { Config } from "./config.ts";
+import { Config } from "@/lib/config.ts";
 import {
   connectionsGauge,
   getMetrics,
@@ -13,7 +13,7 @@ import {
   webSocketClosesCounter,
   webSocketErrorsCounter,
   webSocketOpensCounter,
-} from "./metrics.ts";
+} from "@/lib/metrics.ts";
 import type { NostrRelayMsg } from "@nostrify/nostrify";
 
 // Instantiate config with Deno.env

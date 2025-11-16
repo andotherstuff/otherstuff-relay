@@ -471,15 +471,20 @@ and popular content.
 ### Project Structure
 
 ```
-src/
+lib/
+├── config.ts         # Environment configuration
+├── metrics.ts        # Prometheus metrics collection
+├── opensearch.ts     # OpenSearch relay implementation with NIP-50 and NIP-09 support
+└── opensearch.test.ts # Tests for OpenSearch relay
+
+scripts/
+├── migrate.ts        # Database migration script
+└── start.ts          # Process manager to run all components
+
+services/
 ├── server.ts         # HTTP server and WebSocket handling
 ├── relay-worker.ts   # Relay worker for parallel message processing & validation
-├── storage-worker.ts # Storage worker for batch OpenSearch inserts
-├── opensearch.ts     # OpenSearch relay implementation with NIP-50 and NIP-09 support
-├── start.ts          # Process manager to run all components
-├── migrate.ts        # Database migration script
-├── config.ts         # Environment configuration
-└── metrics.ts        # Prometheus metrics collection
+└── storage-worker.ts # Storage worker for batch OpenSearch inserts
 ```
 
 ### Contributing

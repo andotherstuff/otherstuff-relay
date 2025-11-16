@@ -3,9 +3,9 @@
  */
 import { Client } from "@opensearch-project/opensearch";
 import { createClient as createRedisClient } from "redis";
-import { Config } from "./config.ts";
-import { getMetricsInstance, initializeMetrics } from "./metrics.ts";
-import { OpenSearchRelay } from "./opensearch.ts";
+import { Config } from "@/lib/config.ts";
+import { getMetricsInstance, initializeMetrics } from "@/lib/metrics.ts";
+import { OpenSearchRelay } from "@/lib/opensearch.ts";
 import type { NostrEvent } from "@nostrify/nostrify";
 
 const config = new Config(Deno.env);

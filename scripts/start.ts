@@ -1,9 +1,9 @@
 /**
- * Process manager to run server and workers together
+ * Service manager to run server and workers together
  */
 import { Client } from "@opensearch-project/opensearch";
-import { Config } from "./config.ts";
-import { OpenSearchRelay } from "./opensearch.ts";
+import { Config } from "@/lib/config.ts";
+import { OpenSearchRelay } from "@/lib/opensearch.ts";
 
 // Instantiate config with Deno.env
 const config = new Config(Deno.env);
@@ -35,7 +35,7 @@ const opensearch = new Client(opensearchConfig);
 const relay = new OpenSearchRelay(opensearch);
 await relay.migrate();
 
-// Number of worker processes to run
+// Number of worker instances to run
 const NUM_STORAGE_WORKERS = parseInt(
   Deno.env.get("NUM_STORAGE_WORKERS") || "2",
 );
@@ -46,51 +46,58 @@ console.log(
   `🚀 Starting relay with ${NUM_RELAY_WORKERS} relay workers and ${NUM_STORAGE_WORKERS} storage workers...`,
 );
 
-// Track processes by type for restart logic
-type ProcessType = "relay-worker" | "storage-worker" | "server";
+// Service types
+type ServiceType = "relay-worker" | "storage-worker" | "server";
 
-interface ManagedProcess {
+interface Service {
   process: Deno.ChildProcess;
-  type: ProcessType;
-  id: number; // Worker ID for workers, 0 for server
+  type: ServiceType;
+  instance: number; // Instance number for workers, 0 for server
 }
 
-const processes: ManagedProcess[] = [];
+const services: Service[] = [];
 let isShuttingDown = false;
 
 /**
- * Start a process and track it
+ * Start a service instance
  */
-function startProcess(
-  type: ProcessType,
-  id: number,
+function startService(
+  type: ServiceType,
+  instance: number,
   silent = false,
-): ManagedProcess {
+): Service {
+  // Determine which script to run based on service type
+  const scriptPath = type === "server"
+    ? "services/server.ts"
+    : `services/${type}.ts`;
+
+  // For server, use `deno serve` instead of `deno run`
+  const command = type === "server" ? "serve" : "run";
+
   const process = new Deno.Command("deno", {
-    args: ["task", "-q", type],
+    args: [command, "-A", "--env-file", scriptPath],
     stdout: "inherit",
     stderr: "inherit",
   }).spawn();
 
-  const managed: ManagedProcess = { process, type, id };
+  const service: Service = { process, type, instance };
 
   if (!silent) {
-    console.log(
-      `✅ ${type} ${id > 0 ? `#${id}` : ""} started (PID: ${process.pid})`,
-    );
+    const label = instance > 0 ? `${type} #${instance}` : type;
+    console.log(`✅ ${label} started (PID: ${process.pid})`);
   }
 
-  // Monitor this process
-  monitorProcess(managed);
+  // Monitor this service
+  monitorService(service);
 
-  return managed;
+  return service;
 }
 
 /**
- * Monitor a process and restart it if it dies
+ * Monitor a service and restart it if it dies
  */
-async function monitorProcess(managed: ManagedProcess) {
-  const { process, type, id } = managed;
+async function monitorService(service: Service) {
+  const { process, type, instance } = service;
 
   const status = await process.status;
 
@@ -99,21 +106,23 @@ async function monitorProcess(managed: ManagedProcess) {
     return;
   }
 
+  const label = instance > 0 ? `${type} #${instance}` : type;
+
   console.error(
-    `\n❌ ${type} ${id > 0 ? `#${id}` : ""} exited with status: ${status.code}`,
+    `\n❌ ${label} exited with status: ${status.code}`,
   );
 
-  // Remove from processes array
-  const index = processes.indexOf(managed);
+  // Remove from services array
+  const index = services.indexOf(service);
   if (index > -1) {
-    processes.splice(index, 1);
+    services.splice(index, 1);
   }
 
   // For server, we should probably shut down everything
   // since the server is critical
   if (type === "server") {
     console.error(
-      "⚠️  Server process died - this is critical. Initiating shutdown...",
+      "⚠️  Server service died - this is critical. Initiating shutdown...",
     );
     await shutdown();
     return;
@@ -121,16 +130,14 @@ async function monitorProcess(managed: ManagedProcess) {
 
   // For workers, restart after a delay
   console.log(
-    `🔄 Restarting ${type} ${
-      id > 0 ? `#${id}` : ""
-    } in ${RESTART_DELAY_MS}ms...`,
+    `🔄 Restarting ${label} in ${RESTART_DELAY_MS}ms...`,
   );
 
   await new Promise((resolve) => setTimeout(resolve, RESTART_DELAY_MS));
 
   if (!isShuttingDown) {
-    const newProcess = startProcess(type, id);
-    processes.push(newProcess);
+    const newService = startService(type, instance);
+    services.push(newService);
   }
 }
 
@@ -138,8 +145,8 @@ async function monitorProcess(managed: ManagedProcess) {
 await (async () => {
   const reportInterval = Math.max(1, Math.floor(NUM_RELAY_WORKERS / 10)); // Report every 10%
   for (let i = 0; i < NUM_RELAY_WORKERS; i++) {
-    const managed = startProcess("relay-worker", i + 1, true);
-    processes.push(managed);
+    const service = startService("relay-worker", i + 1, true);
+    services.push(service);
     await new Promise((resolve) => setTimeout(resolve, 50)); // Stagger startups
 
     // Report progress
@@ -154,8 +161,8 @@ await (async () => {
 await (async () => {
   const reportInterval = Math.max(1, Math.floor(NUM_STORAGE_WORKERS / 10)); // Report every 10%
   for (let i = 0; i < NUM_STORAGE_WORKERS; i++) {
-    const managed = startProcess("storage-worker", i + 1, true);
-    processes.push(managed);
+    const service = startService("storage-worker", i + 1, true);
+    services.push(service);
     await new Promise((resolve) => setTimeout(resolve, 50)); // Stagger startups
 
     // Report progress
@@ -167,8 +174,8 @@ await (async () => {
 })();
 
 // Start server
-const serverManaged = startProcess("server", 0);
-processes.push(serverManaged);
+const serverService = startService("server", 0);
+services.push(serverService);
 
 // Graceful shutdown handler
 const shutdown = async () => {
@@ -177,20 +184,20 @@ const shutdown = async () => {
   }
 
   isShuttingDown = true;
-  console.log("\n🛑 Shutting down all processes...");
+  console.log("\n🛑 Shutting down all services...");
 
-  for (const managed of processes) {
+  for (const service of services) {
     try {
-      managed.process.kill("SIGTERM");
+      service.process.kill("SIGTERM");
     } catch {
-      // Process might already be dead
+      // Service might already be dead
     }
   }
 
-  // Wait for all processes to exit
-  await Promise.all(processes.map((m) => m.process.status));
+  // Wait for all services to exit
+  await Promise.all(services.map((s) => s.process.status));
 
-  console.log("✅ All processes stopped");
+  console.log("✅ All services stopped");
   Deno.exit(0);
 };
 
