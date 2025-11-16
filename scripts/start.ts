@@ -149,7 +149,7 @@ await Promise.all([
     for (let i = 0; i < NUM_RELAY_WORKERS; i++) {
       const service = startService("relay-worker", i + 1, true);
       services.push(service);
-      await new Promise((resolve) => setTimeout(resolve, 10)); // Stagger startups
+      await new Promise((resolve) => setTimeout(resolve, 50)); // Stagger startups
 
       // Report progress
       if ((i + 1) % reportInterval === 0 || i === NUM_RELAY_WORKERS - 1) {
@@ -165,7 +165,7 @@ await Promise.all([
     for (let i = 0; i < NUM_STORAGE_WORKERS; i++) {
       const service = startService("storage-worker", i + 1, true);
       services.push(service);
-      await new Promise((resolve) => setTimeout(resolve, 10)); // Stagger startups
+      await new Promise((resolve) => setTimeout(resolve, 50)); // Stagger startups
 
       // Report progress
       if ((i + 1) % reportInterval === 0 || i === NUM_STORAGE_WORKERS - 1) {
