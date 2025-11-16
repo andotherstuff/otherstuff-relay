@@ -250,7 +250,7 @@ deno task start
 This starts:
 
 - 1 web server (16 Deno instances via `deno serve`)
-- 4 relay workers (configurable via `NUM_RELAY_WORKERS` env var)
+- 16 relay workers (configurable via `NUM_RELAY_WORKERS` env var)
 - 2 storage workers (configurable via `NUM_STORAGE_WORKERS` env var)
 
 **Manual** - Run processes separately:
@@ -278,7 +278,7 @@ deno task server
 Adjust the number of worker processes in `.env`:
 
 ```bash
-NUM_RELAY_WORKERS=8      # Run 8 relay workers for parallel validation
+NUM_RELAY_WORKERS=64      # Run 64 relay workers for parallel validation
 NUM_STORAGE_WORKERS=4    # Run 4 storage workers for higher write throughput
 ```
 
