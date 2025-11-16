@@ -32,6 +32,31 @@ initializeMetrics(redis);
 // Get metrics instance for use in this module
 const metrics = getMetricsInstance();
 
+// Track active connection IDs for cleanup
+const activeConnections = new Set<string>();
+
+// Periodic cleanup of orphaned response queues
+// This runs every 30 seconds and removes queues for connections that are no longer active
+const cleanupInterval = setInterval(async () => {
+  try {
+    // Find all response queues
+    const queueKeys = await redis.keys("nostr:responses:*");
+
+    for (const queueKey of queueKeys) {
+      // Extract connection ID from queue key
+      const connId = queueKey.replace("nostr:responses:", "");
+
+      // If this connection is not in our active set, delete the queue
+      if (!activeConnections.has(connId)) {
+        await redis.del(queueKey);
+        console.log(`Cleaned up orphaned response queue: ${queueKey}`);
+      }
+    }
+  } catch (err) {
+    console.error("Error during orphaned queue cleanup:", err);
+  }
+}, 30000); // Run every 30 seconds
+
 const app = new Hono();
 
 // Metrics endpoint
@@ -64,6 +89,9 @@ app.get("/", (c) => {
   const queueKey = `nostr:responses:${connId}`;
 
   socket.onopen = async () => {
+    // Track this connection as active
+    activeConnections.add(connId);
+
     metrics.incrementConnections();
     metrics.incrementWebSocketOpens();
     connectionsGauge.inc();
@@ -88,7 +116,7 @@ app.get("/", (c) => {
 
           for (const responseJson of responses) {
             try {
-              const { msg } = JSON.parse(responseJson);
+              const msg = JSON.parse(responseJson);
               send(msg);
             } catch (err) {
               console.error("Error parsing response:", err);
@@ -123,6 +151,9 @@ app.get("/", (c) => {
   };
 
   socket.onclose = async () => {
+    // Remove from active connections set
+    activeConnections.delete(connId);
+
     metrics.incrementConnections(-1);
     metrics.incrementWebSocketCloses();
     connectionsGauge.dec();
@@ -181,6 +212,10 @@ console.log(
 
 const shutdown = async () => {
   console.log("Shutting down server...");
+
+  // Clear cleanup interval
+  clearInterval(cleanupInterval);
+
   await redis.quit();
   Deno.exit(0);
 };

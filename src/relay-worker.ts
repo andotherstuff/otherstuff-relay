@@ -391,15 +391,16 @@ async function broadcastEvent(event: NostrEvent): Promise<void> {
 }
 
 async function sendResponse(connId: string, msg: NostrRelayMsg): Promise<void> {
-  const response = {
-    connId,
-    msg,
-  };
   const queueKey = `nostr:responses:${connId}`;
 
-  // Just push the response - don't set TTL on every push
-  // The server's onclose handler will clean up the queue
-  await redis.rPush(queueKey, JSON.stringify(response));
+  // Push the response and set TTL atomically using pipeline
+  // TTL of 60 seconds ensures orphaned queues get cleaned up
+  // If the connection is still active, the server will reset this TTL
+  // Note: We only store the message, not the connId - it's already in the queue key
+  const pipeline = redis.multi();
+  pipeline.rPush(queueKey, JSON.stringify(msg));
+  pipeline.expire(queueKey, 60);
+  await pipeline.exec();
 }
 
 // Main processing loop
