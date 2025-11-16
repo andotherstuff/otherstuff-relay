@@ -8,6 +8,7 @@ import {
   initializeMetrics,
   register,
 } from "@/lib/metrics.ts";
+import type { NostrRelayMsg } from "@nostrify/nostrify";
 
 // Instantiate config with Deno.env
 const config = new Config(Deno.env);
@@ -33,9 +34,6 @@ const localMetrics = {
   messagesSent: 0,
   messagesReceived: 0,
 };
-
-// Track memory usage for debugging OOM issues
-let lastMemoryLog = 0;
 
 // Flush local metrics to Redis every 5 seconds
 setInterval(async () => {
@@ -64,19 +62,6 @@ setInterval(async () => {
     if (localMetrics.messagesReceived > 0) {
       await metrics.incrementMessagesReceived(localMetrics.messagesReceived);
       localMetrics.messagesReceived = 0;
-    }
-
-    // Log memory usage every 60 seconds to help diagnose OOM
-    const now = Date.now();
-    if (now - lastMemoryLog >= 60000) {
-      const mem = Deno.memoryUsage();
-      const heapMB = (mem.heapUsed / 1024 / 1024).toFixed(2);
-      const rssMB = (mem.rss / 1024 / 1024).toFixed(2);
-      const connections = currentConnections.values[0]?.value || 0;
-      console.log(
-        `📊 Memory: ${heapMB}MB heap, ${rssMB}MB RSS, ${connections} connections`,
-      );
-      lastMemoryLog = now;
     }
   } catch (err) {
     console.error("Error flushing metrics:", err);
@@ -111,32 +96,8 @@ app.get("/", (c) => {
 
   const { socket, response } = Deno.upgradeWebSocket(c.req.raw);
   const connId = crypto.randomUUID();
-  const queueKey = `nostr:responses:${connId}`;
-
   let responsePoller: number | null = null;
-
-  // Cleanup function to explicitly break circular references
-  const cleanup = async () => {
-    // Clear interval first
-    if (responsePoller !== null) {
-      clearInterval(responsePoller);
-      responsePoller = null;
-    }
-
-    // Clean up response queue in Redis
-    try {
-      await redis.del(queueKey);
-    } catch (err) {
-      console.error("Error cleaning up connection data:", err);
-    }
-
-    // Explicitly null out all event handlers to break circular references
-    // This helps V8 garbage collector identify these objects as collectable
-    socket.onopen = null;
-    socket.onmessage = null;
-    socket.onclose = null;
-    socket.onerror = null;
-  };
+  const queueKey = `nostr:responses:${connId}`;
 
   socket.onopen = () => {
     connectionsGauge.inc();
@@ -144,15 +105,6 @@ app.get("/", (c) => {
 
     // Start polling for responses from relay workers
     responsePoller = setInterval(async () => {
-      // Check if socket is still open before doing work
-      if (socket.readyState !== WebSocket.OPEN) {
-        if (responsePoller !== null) {
-          clearInterval(responsePoller);
-          responsePoller = null;
-        }
-        return;
-      }
-
       try {
         // Non-blocking pop of responses
         const responses = await redis.lPopCount(queueKey, 100);
@@ -163,13 +115,9 @@ app.get("/", (c) => {
           for (const responseJson of responses) {
             try {
               const msg = JSON.parse(responseJson);
-              // Inline send to avoid closure
-              if (socket.readyState === WebSocket.OPEN) {
-                localMetrics.messagesSent++;
-                socket.send(JSON.stringify(msg));
-              }
+              send(msg);
             } catch (err) {
-              console.error("Error parsing/sending response:", err);
+              console.error("Error parsing response:", err);
             }
           }
         }
@@ -193,33 +141,46 @@ app.get("/", (c) => {
       );
     } catch (err) {
       console.error("Message queueing error:", err);
-      // Inline send to avoid closure
-      try {
-        if (socket.readyState === WebSocket.OPEN) {
-          socket.send(
-            JSON.stringify(["NOTICE", "error: failed to queue message"]),
-          );
-        }
-      } catch {
-        // Ignore send errors
-      }
+      send(["NOTICE", "error: failed to queue message"]);
     }
   };
 
   socket.onclose = async () => {
     connectionsGauge.dec();
     localMetrics.websocketCloses++;
-    await cleanup();
+
+    // Stop polling for responses
+    if (responsePoller !== null) {
+      clearInterval(responsePoller);
+    }
+
+    // Clean up response queue in Redis
+    try {
+      await redis.del(queueKey);
+    } catch (err) {
+      console.error("Error cleaning up connection data:", err);
+    }
   };
 
-  socket.onerror = async (err) => {
+  socket.onerror = (err) => {
     localMetrics.websocketErrors++;
     if (Deno.env.get("DEBUG")) {
       console.error("WebSocket error:", err);
     }
-    // Clean up on error to prevent leaks
-    await cleanup();
   };
+
+  function send(msg: NostrRelayMsg) {
+    try {
+      if (socket.readyState === WebSocket.OPEN) {
+        localMetrics.messagesSent++;
+        socket.send(JSON.stringify(msg));
+      }
+    } catch (err) {
+      if (Deno.env.get("DEBUG")) {
+        console.error("Error sending message:", err);
+      }
+    }
+  }
 
   return response;
 });
