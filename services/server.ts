@@ -130,6 +130,16 @@ async function sendManagementCommand(
 
 const app = new Hono();
 
+// Enable CORS for all routes except WebSocket upgrades
+app.use("*", (c, next) => {
+  const upgrade = c.req.header("upgrade");
+  if (upgrade === "websocket") {
+    return next();
+  } else {
+    return cors()(c, next);
+  }
+});
+
 // Metrics endpoint
 app.get("/metrics", async (c) => {
   const metricsText = await getMetrics();
@@ -148,7 +158,7 @@ app.get("/health", async (c) => {
 });
 
 // NIP-86 Management API endpoint
-app.post("/", cors(), async (c) => {
+app.post("/", async (c) => {
   const contentType = c.req.header("content-type");
 
   // Only handle management API requests
