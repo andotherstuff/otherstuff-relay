@@ -169,8 +169,8 @@ app.post("/", async (c) => {
   // Get request body for payload validation
   const body = await c.req.text();
 
-  // Construct full URL including query params
-  const url = new URL(c.req.url).toString();
+  // Use configured relay URL if provided, otherwise use request URL
+  const url = config.relayUrl || c.req.url;
 
   // Validate auth event
   const validation = validateAuthEvent(authEvent, url, "POST", body);

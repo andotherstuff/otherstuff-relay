@@ -193,6 +193,21 @@ REDIS_URL=redis://localhost:6379
 BROADCAST_MAX_AGE=300
 ```
 
+#### NIP-86 Management API Configuration
+
+```bash
+# Comma-separated list of admin pubkeys (hex format) authorized to use the management API
+# Leave empty to disable the management API
+ADMIN_PUBKEYS=pubkey1,pubkey2,pubkey3
+
+# Relay URL for NIP-98 authentication (optional)
+# If set, this URL will be used for validating the 'u' tag in NIP-98 auth events
+# instead of the actual request URL. Useful when the relay is behind a reverse proxy
+# or load balancer where the internal URL differs from the public URL.
+# Example: RELAY_URL=https://relay.example.com/
+RELAY_URL=
+```
+
 ### Database Setup
 
 Before running the server, initialize the OpenSearch index:
@@ -491,18 +506,28 @@ Set admin pubkeys in your `.env` file:
 # Comma-separated list of admin pubkeys (hex format)
 ADMIN_PUBKEYS=pubkey1,pubkey2,pubkey3
 
+# Optional: Set relay URL for NIP-98 authentication
+# Useful when behind a reverse proxy or load balancer
+RELAY_URL=https://relay.example.com/
+
 # Optional: Set initial relay metadata
 RELAY_NAME=My Nostr Relay
 RELAY_DESCRIPTION=A high-performance relay
 RELAY_ICON=https://example.com/icon.png
 ```
 
+**Note about RELAY_URL**: When your relay is behind a reverse proxy or load
+balancer, the internal request URL (e.g., `http://localhost:8000/`) will differ
+from the public URL (e.g., `https://relay.example.com/`). Set `RELAY_URL` to the
+public URL so that NIP-98 auth events can use the correct URL in their `u` tag.
+
 ### Authentication
 
 All management API requests require NIP-98 HTTP authentication:
 
 1. Create a kind 27235 event with:
-   - `u` tag: Full relay URL (e.g., `http://localhost:8000/`)
+   - `u` tag: Full relay URL (use the configured `RELAY_URL` if set, e.g.,
+     `https://relay.example.com/`)
    - `method` tag: `POST`
    - `payload` tag: SHA256 hash of request body (hex)
 2. Base64 encode the event

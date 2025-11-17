@@ -15,6 +15,7 @@ export class Config {
   public readonly relayPubkey?: string;
   public readonly relayContact?: string;
   public readonly relayBanner?: string;
+  public readonly relayUrl?: string;
 
   constructor(env: { get(key: string): string | undefined }) {
     this.port = parseInt(env.get("PORT") || "8000");
@@ -25,6 +26,8 @@ export class Config {
     this.redisUrl = env.get("REDIS_URL") || "redis://localhost:6379";
     // Default to 5 minutes (300 seconds), 0 means no age limit
     this.broadcastMaxAge = parseInt(env.get("BROADCAST_MAX_AGE") || "300");
+    // Relay URL for NIP-98 authentication (optional, defaults to request URL)
+    this.relayUrl = env.get("RELAY_URL");
 
     // NIP-86 Management API
     const adminPubkeysStr = env.get("ADMIN_PUBKEYS") || "";
