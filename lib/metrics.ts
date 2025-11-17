@@ -11,6 +11,7 @@ const METRICS_KEYS = {
   events_failed: "nostr:metrics:events_failed",
   events_invalid: "nostr:metrics:events_invalid",
   events_rejected: "nostr:metrics:events_rejected",
+  events_broadcast: "nostr:metrics:events_broadcast",
   queries_total: "nostr:metrics:queries_total",
   subscriptions_active: "nostr:metrics:subscriptions_active",
   events_by_kind: "nostr:metrics:events_by_kind",
@@ -73,6 +74,12 @@ const eventsInvalidCounter = new Counter({
 const eventsRejectedCounter = new Counter({
   name: "nostr_events_rejected",
   help: "Total events rejected",
+  registers: [register],
+});
+
+const eventsBroadcastCounter = new Counter({
+  name: "nostr_events_broadcast",
+  help: "Total events broadcast to subscribers",
   registers: [register],
 });
 
@@ -161,6 +168,10 @@ export class RedisMetrics {
     await this.redis.incrBy(METRICS_KEYS.events_rejected, delta);
   }
 
+  async incrementEventsBroadcast(delta: number = 1): Promise<void> {
+    await this.redis.incrBy(METRICS_KEYS.events_broadcast, delta);
+  }
+
   async incrementWebSocketOpens(delta: number = 1): Promise<void> {
     await this.redis.incrBy(METRICS_KEYS.websocket_opens, delta);
   }
@@ -225,6 +236,11 @@ export class RedisMetrics {
 
   async getEventsRejected(): Promise<number> {
     const value = await this.redis.get(METRICS_KEYS.events_rejected);
+    return value ? parseInt(value, 10) : 0;
+  }
+
+  async getEventsBroadcast(): Promise<number> {
+    const value = await this.redis.get(METRICS_KEYS.events_broadcast);
     return value ? parseInt(value, 10) : 0;
   }
 
@@ -378,6 +394,11 @@ export async function getMetrics(): Promise<string> {
     eventsRejectedCounter,
     "events_rejected",
     allMetrics.events_rejected,
+  );
+  incrementCounter(
+    eventsBroadcastCounter,
+    "events_broadcast",
+    allMetrics.events_broadcast || 0,
   );
   incrementCounter(
     queriesTotalCounter,

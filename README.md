@@ -70,7 +70,8 @@ This architecture solves the validation bottleneck by:
 
 ### NIP Support
 
-- **NIP-01**: Basic protocol flow, event validation, and filtering
+- **NIP-01**: Basic protocol flow, event validation, filtering, and real-time
+  subscriptions with inverted indexes
 - **NIP-09**: Event deletion requests (kind 5 events)
 - **NIP-11**: Relay information document
 - **NIP-50**: Full-text search with advanced sort modes (hot, top,
@@ -80,6 +81,8 @@ This architecture solves the validation bottleneck by:
 
 ### Performance
 
+- **Inverted Index Subscriptions**: O(log n) subscription matching using Redis
+  inverted indexes for efficient real-time event broadcasting
 - **Intelligent Rate Limiting**: Per-connection limits prevent abuse while
   maintaining throughput
 - **Query Optimization**: Automatic timeouts, size limits, and result caps
@@ -666,6 +669,8 @@ and popular content.
 
 ## Documentation
 
+- **[PubSub System](./docs/PUBSUB.md)** - Real-time subscription system with
+  inverted indexes for NIP-01
 - **[NIP-86 & NIP-11 Implementation](./NIP86_IMPLEMENTATION.md)** - Technical
   details of the NIP-86 and NIP-11 implementations
 - **[Admin Guide](./docs/ADMIN_GUIDE.md)** - How to manage your relay using the
@@ -684,7 +689,16 @@ lib/
 ├── config.ts         # Environment configuration
 ├── metrics.ts        # Prometheus metrics collection
 ├── opensearch.ts     # OpenSearch relay implementation with NIP-50 and NIP-09 support
-└── opensearch.test.ts # Tests for OpenSearch relay
+├── opensearch.test.ts # Tests for OpenSearch relay
+├── pubsub.ts         # PubSub system with inverted indexes for NIP-01 subscriptions
+├── pubsub.test.ts    # Tests for PubSub system
+├── management.ts     # NIP-86 relay management
+├── auth.ts           # NIP-98 authentication
+└── relay-info.ts     # NIP-11 relay information
+
+docs/
+├── PUBSUB.md         # PubSub system documentation
+└── ADMIN_GUIDE.md    # NIP-86 admin guide
 
 scripts/
 ├── migrate.ts        # Database migration script
@@ -693,7 +707,8 @@ scripts/
 services/
 ├── server.ts         # HTTP server and WebSocket handling
 ├── relay-worker.ts   # Relay worker for parallel message processing & validation
-└── storage-worker.ts # Storage worker for batch OpenSearch inserts
+├── storage-worker.ts # Storage worker for batch OpenSearch inserts
+└── management-worker.ts # Management worker for NIP-86 operations
 ```
 
 ### Contributing

@@ -17,6 +17,7 @@ import {
 } from "@/lib/auth.ts";
 import { RelayManagement } from "@/lib/management.ts";
 import { getRelayInformation } from "@/lib/relay-info.ts";
+import { PubSub } from "@/lib/pubsub.ts";
 
 // Instantiate config with Deno.env
 const config = new Config(Deno.env);
@@ -36,6 +37,9 @@ const metrics = getMetricsInstance();
 
 // Initialize relay management
 const management = new RelayManagement(redis);
+
+// Initialize PubSub for subscription cleanup
+const pubsub = new PubSub(redis);
 
 // Initialize relay metadata from config if provided
 if (config.relayName) {
@@ -151,9 +155,12 @@ app.get("/metrics", async (c) => {
 // Health endpoint
 app.get("/health", async (c) => {
   const queueLength = await redis.lLen("nostr:relay:queue");
+  const pubsubStats = await pubsub.getStats();
+
   return c.json({
     status: "ok",
     queueLength,
+    subscriptions: pubsubStats,
   });
 });
 
@@ -405,6 +412,12 @@ app.get("/", async (c) => {
             }
           }
         }
+
+        // Refresh subscription TTLs every 10 iterations (1 second)
+        // This keeps active subscriptions alive
+        if (Math.random() < 0.1) {
+          await pubsub.refreshConnection(connId);
+        }
       } catch (err) {
         console.error("Error polling responses:", err);
       }
@@ -438,9 +451,10 @@ app.get("/", async (c) => {
       clearInterval(responsePoller);
     }
 
-    // Clean up response queue in Redis
+    // Clean up response queue and subscriptions in Redis
     try {
       await redis.del(queueKey);
+      await pubsub.unsubscribeAll(connId);
     } catch (err) {
       console.error("Error cleaning up connection data:", err);
     }

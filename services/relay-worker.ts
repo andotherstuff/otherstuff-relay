@@ -11,6 +11,7 @@ import { Config } from "@/lib/config.ts";
 import { getMetricsInstance, initializeMetrics } from "@/lib/metrics.ts";
 import { OpenSearchRelay } from "@/lib/opensearch.ts";
 import { RelayManagement } from "@/lib/management.ts";
+import { PubSub } from "@/lib/pubsub.ts";
 import type {
   NostrEvent,
   NostrFilter,
@@ -65,6 +66,9 @@ const relay = new OpenSearchRelay(opensearch);
 
 // Initialize relay management with relay for ban enforcement
 const management = new RelayManagement(redis, relay);
+
+// Initialize PubSub for subscription management
+const pubsub = new PubSub(redis);
 
 const WORKER_ID = crypto.randomUUID().slice(0, 8);
 
@@ -217,6 +221,19 @@ async function handleReq(
     filters = filters.slice(0, 10);
   }
 
+  // Subscribe for future events using PubSub
+  try {
+    await pubsub.subscribe(connId, subId, filters);
+  } catch (error) {
+    console.error("Failed to subscribe:", error);
+    await sendResponse(connId, [
+      "CLOSED",
+      subId,
+      "error: failed to create subscription",
+    ]);
+    return;
+  }
+
   // Query historical events for each filter
   const queryPromises = filters.map(async (filter) => {
     try {
@@ -247,13 +264,43 @@ async function handleReq(
   await sendResponse(connId, ["EOSE", subId]);
 }
 
-async function handleClose(_connId: string, _subId: string): Promise<void> {
-  // Subscription tracking removed - will be reimplemented differently
+async function handleClose(connId: string, subId: string): Promise<void> {
+  try {
+    await pubsub.unsubscribe(connId, subId);
+  } catch (error) {
+    console.error("Failed to unsubscribe:", error);
+  }
 }
 
-async function broadcastEvent(_event: NostrEvent): Promise<void> {
-  // Event broadcasting removed - will be reimplemented differently
-  // The old implementation using nostr:conn:* keys was highly inefficient
+async function broadcastEvent(event: NostrEvent): Promise<void> {
+  // Check if event is too old to broadcast (but not ephemeral)
+  const ephemeral = isEphemeral(event.kind);
+  const tooOld = isEventTooOld(event);
+
+  if (!ephemeral && tooOld) {
+    // Skip broadcasting old events
+    return;
+  }
+
+  try {
+    // Find all matching subscriptions using inverted indexes
+    const matchingSubscriptions = await pubsub.findMatchingSubscriptions(event);
+
+    // Broadcast to each matching subscription
+    for (const [_indexKey, subscription] of matchingSubscriptions) {
+      const { connId, subId } = subscription;
+
+      // Send EVENT message to the connection
+      await sendResponse(connId, ["EVENT", subId, event]);
+    }
+
+    // Increment broadcast counter if we sent to any subscriptions
+    if (matchingSubscriptions.size > 0) {
+      await metrics.incrementEventsBroadcast();
+    }
+  } catch (error) {
+    console.error("Failed to broadcast event:", error);
+  }
 }
 
 async function sendResponse(connId: string, msg: NostrRelayMsg): Promise<void> {
