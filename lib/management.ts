@@ -1,4 +1,5 @@
 import type { RedisClientType } from "redis";
+import type { NRelay } from "@nostrify/nostrify";
 
 /**
  * NIP-86 Relay Management
@@ -27,19 +28,84 @@ export interface BlockedIP {
 
 /**
  * Management operations for NIP-86
+ *
+ * The relay parameter is optional:
+ * - When provided: ban operations will DELETE events from the database
+ * - When omitted: ban operations only record the ban in Redis (deletion must be handled separately)
+ *
+ * Usage:
+ * - Server: Creates without relay (queues deletion operations to management-worker)
+ * - Relay-worker: Creates with relay (can enforce bans during validation)
+ * - Management-worker: Creates with relay (performs actual deletions)
  */
 export class RelayManagement {
   private redis: RedisClientType;
+  private relay?: NRelay;
 
-  constructor(redis: RedisClientType) {
+  constructor(redis: RedisClientType, relay?: NRelay) {
     this.redis = redis;
+    this.relay = relay;
   }
 
   // ============================================================================
   // Pubkey Management
   // ============================================================================
 
+  /**
+   * Ban a pubkey from publishing events
+   *
+   * This will DELETE all existing events from that pubkey in the database
+   * and record the ban in Redis to prevent future insertions.
+   *
+   * Requires a relay to be provided to the constructor. If no relay is available,
+   * this method will throw an error.
+   *
+   * @param pubkey - The pubkey to ban (hex format)
+   * @param reason - Optional reason for the ban
+   * @returns true if successful
+   * @throws Error if no relay is available for deletion
+   */
   async banPubkey(pubkey: string, reason?: string): Promise<boolean> {
+    // Relay is required for deletion
+    if (!this.relay || !this.relay.remove) {
+      throw new Error(
+        "Cannot ban pubkey: relay not available for deletion. " +
+          "Use RelayManagement with a relay instance, or call recordBanPubkey() to only record the ban.",
+      );
+    }
+
+    // Delete all events from this pubkey
+    try {
+      await this.relay.remove([{ authors: [pubkey] }]);
+      console.log(`🗑️  Deleted all events from banned pubkey: ${pubkey}`);
+    } catch (error) {
+      console.error(
+        `Failed to delete events from banned pubkey ${pubkey}:`,
+        error,
+      );
+      throw error; // Don't record ban if deletion fails
+    }
+
+    // Record the ban in Redis
+    await this.redis.hSet(
+      "relay:banned:pubkeys",
+      pubkey,
+      reason || "",
+    );
+    return true;
+  }
+
+  /**
+   * Record a pubkey ban in Redis without deleting events
+   *
+   * This is useful when deletion is handled separately (e.g., by a management worker)
+   * or when you only want to prevent future insertions without deleting existing events.
+   *
+   * @param pubkey - The pubkey to ban (hex format)
+   * @param reason - Optional reason for the ban
+   * @returns true if successful
+   */
+  async recordBanPubkey(pubkey: string, reason?: string): Promise<boolean> {
     await this.redis.hSet(
       "relay:banned:pubkeys",
       pubkey,
@@ -92,7 +158,58 @@ export class RelayManagement {
   // Event Management
   // ============================================================================
 
+  /**
+   * Ban a specific event by ID
+   *
+   * This will DELETE the event from the database and record the ban in Redis
+   * to prevent future insertions.
+   *
+   * Requires a relay to be provided to the constructor. If no relay is available,
+   * this method will throw an error.
+   *
+   * @param id - The event ID to ban (hex format)
+   * @param reason - Optional reason for the ban
+   * @returns true if successful
+   * @throws Error if no relay is available for deletion
+   */
   async banEvent(id: string, reason?: string): Promise<boolean> {
+    // Relay is required for deletion
+    if (!this.relay || !this.relay.remove) {
+      throw new Error(
+        "Cannot ban event: relay not available for deletion. " +
+          "Use RelayManagement with a relay instance, or call recordBanEvent() to only record the ban.",
+      );
+    }
+
+    // Delete the event
+    try {
+      await this.relay.remove([{ ids: [id] }]);
+      console.log(`🗑️  Deleted banned event: ${id}`);
+    } catch (error) {
+      console.error(`Failed to delete banned event ${id}:`, error);
+      throw error; // Don't record ban if deletion fails
+    }
+
+    // Record the ban in Redis
+    await this.redis.hSet(
+      "relay:banned:events",
+      id,
+      reason || "",
+    );
+    return true;
+  }
+
+  /**
+   * Record an event ban in Redis without deleting the event
+   *
+   * This is useful when deletion is handled separately (e.g., by a management worker)
+   * or when you only want to prevent future insertions without deleting the existing event.
+   *
+   * @param id - The event ID to ban (hex format)
+   * @param reason - Optional reason for the ban
+   * @returns true if successful
+   */
+  async recordBanEvent(id: string, reason?: string): Promise<boolean> {
     await this.redis.hSet(
       "relay:banned:events",
       id,

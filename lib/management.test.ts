@@ -1,6 +1,7 @@
 import { assertEquals } from "@std/assert";
 import { createClient as createRedisClient, type RedisClientType } from "redis";
 import { RelayManagement } from "./management.ts";
+import type { NostrFilter, NRelay } from "@nostrify/nostrify";
 
 // Helper to create a fresh Redis connection and management instance
 async function setup() {
@@ -31,9 +32,9 @@ Deno.test("RelayManagement - ban and list pubkeys", async () => {
   const pubkey1 = "a".repeat(64);
   const pubkey2 = "b".repeat(64);
 
-  // Ban pubkeys
-  await management.banPubkey(pubkey1, "spam");
-  await management.banPubkey(pubkey2);
+  // Record bans (without relay, so no deletion)
+  await management.recordBanPubkey(pubkey1, "spam");
+  await management.recordBanPubkey(pubkey2);
 
   // Check if banned
   assertEquals(await management.isPubkeyBanned(pubkey1), true);
@@ -88,9 +89,9 @@ Deno.test("RelayManagement - ban and allow events", async () => {
   const eventId1 = "1".repeat(64);
   const eventId2 = "2".repeat(64);
 
-  // Ban events
-  await management.banEvent(eventId1, "illegal content");
-  await management.banEvent(eventId2);
+  // Record bans (without relay, so no deletion)
+  await management.recordBanEvent(eventId1, "illegal content");
+  await management.recordBanEvent(eventId2);
 
   // Check if banned
   assertEquals(await management.isEventBanned(eventId1), true);
@@ -214,6 +215,108 @@ Deno.test("RelayManagement - supported methods", async () => {
       methods.includes(method),
       true,
       `Missing method: ${method}`,
+    );
+  }
+
+  await cleanup(redis);
+});
+
+Deno.test("RelayManagement - banPubkey calls relay.remove()", async () => {
+  const redis: RedisClientType = createRedisClient({
+    url: Deno.env.get("REDIS_URL") || "redis://localhost:6379",
+  });
+  await redis.connect();
+
+  // Mock relay that tracks remove() calls
+  const removeCalls: NostrFilter[][] = [];
+  const mockRelay: Partial<NRelay> = {
+    remove: (filters: NostrFilter[]) => {
+      removeCalls.push(filters);
+      return Promise.resolve();
+    },
+  };
+
+  const management = new RelayManagement(redis, mockRelay as NRelay);
+
+  const pubkey = "a".repeat(64);
+  await management.banPubkey(pubkey, "spam");
+
+  // Verify remove was called with correct filter
+  assertEquals(removeCalls.length, 1);
+  assertEquals(removeCalls[0], [{ authors: [pubkey] }]);
+
+  await cleanup(redis);
+});
+
+Deno.test("RelayManagement - banEvent calls relay.remove()", async () => {
+  const redis: RedisClientType = createRedisClient({
+    url: Deno.env.get("REDIS_URL") || "redis://localhost:6379",
+  });
+  await redis.connect();
+
+  // Mock relay that tracks remove() calls
+  const removeCalls: NostrFilter[][] = [];
+  const mockRelay: Partial<NRelay> = {
+    remove: (filters: NostrFilter[]) => {
+      removeCalls.push(filters);
+      return Promise.resolve();
+    },
+  };
+
+  const management = new RelayManagement(redis, mockRelay as NRelay);
+
+  const eventId = "1".repeat(64);
+  await management.banEvent(eventId, "illegal");
+
+  // Verify remove was called with correct filter
+  assertEquals(removeCalls.length, 1);
+  assertEquals(removeCalls[0], [{ ids: [eventId] }]);
+
+  await cleanup(redis);
+});
+
+Deno.test("RelayManagement - banPubkey throws without relay", async () => {
+  const redis: RedisClientType = createRedisClient({
+    url: Deno.env.get("REDIS_URL") || "redis://localhost:6379",
+  });
+  await redis.connect();
+
+  const management = new RelayManagement(redis); // No relay provided
+
+  const pubkey = "a".repeat(64);
+
+  try {
+    await management.banPubkey(pubkey, "spam");
+    throw new Error("Should have thrown an error");
+  } catch (error) {
+    assertEquals(
+      (error as Error).message,
+      "Cannot ban pubkey: relay not available for deletion. " +
+        "Use RelayManagement with a relay instance, or call recordBanPubkey() to only record the ban.",
+    );
+  }
+
+  await cleanup(redis);
+});
+
+Deno.test("RelayManagement - banEvent throws without relay", async () => {
+  const redis: RedisClientType = createRedisClient({
+    url: Deno.env.get("REDIS_URL") || "redis://localhost:6379",
+  });
+  await redis.connect();
+
+  const management = new RelayManagement(redis); // No relay provided
+
+  const eventId = "1".repeat(64);
+
+  try {
+    await management.banEvent(eventId, "illegal");
+    throw new Error("Should have thrown an error");
+  } catch (error) {
+    assertEquals(
+      (error as Error).message,
+      "Cannot ban event: relay not available for deletion. " +
+        "Use RelayManagement with a relay instance, or call recordBanEvent() to only record the ban.",
     );
   }
 

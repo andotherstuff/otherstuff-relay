@@ -89,6 +89,44 @@ setInterval(async () => {
   }
 }, 5000);
 
+/**
+ * Send a management command to the management worker and wait for response
+ */
+async function sendManagementCommand(
+  method: string,
+  params: unknown[],
+  timeoutMs = 5000,
+): Promise<unknown> {
+  const requestId = crypto.randomUUID();
+
+  // Queue the command
+  await redis.rPush(
+    "relay:management:queue",
+    JSON.stringify({ method, params, requestId }),
+  );
+
+  // Wait for response with timeout
+  const startTime = Date.now();
+  while (Date.now() - startTime < timeoutMs) {
+    const response = await redis.get(`relay:management:response:${requestId}`);
+    if (response) {
+      // Clean up response
+      await redis.del(`relay:management:response:${requestId}`);
+
+      const parsed = JSON.parse(response);
+      if (parsed.error) {
+        throw new Error(parsed.error);
+      }
+      return parsed.result;
+    }
+
+    // Poll every 50ms
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  throw new Error("Management command timed out");
+}
+
 const app = new Hono();
 
 // Metrics endpoint
@@ -182,10 +220,8 @@ app.post("/", async (c) => {
         if (typeof params[0] !== "string") {
           return c.json({ error: "Invalid pubkey parameter" }, 400);
         }
-        result = await management.banPubkey(
-          params[0],
-          params[1] as string | undefined,
-        );
+        // Send to management worker to delete events from OpenSearch
+        result = await sendManagementCommand("banpubkey", params);
         break;
 
       case "listbannedpubkeys":
@@ -210,10 +246,8 @@ app.post("/", async (c) => {
         if (typeof params[0] !== "string") {
           return c.json({ error: "Invalid event id parameter" }, 400);
         }
-        result = await management.banEvent(
-          params[0],
-          params[1] as string | undefined,
-        );
+        // Send to management worker to delete event from OpenSearch
+        result = await sendManagementCommand("banevent", params);
         break;
 
       case "allowevent":

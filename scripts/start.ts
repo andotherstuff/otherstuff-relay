@@ -47,7 +47,11 @@ console.log(
 );
 
 // Service types
-type ServiceType = "relay-worker" | "storage-worker" | "server";
+type ServiceType =
+  | "relay-worker"
+  | "storage-worker"
+  | "management-worker"
+  | "server";
 
 interface Service {
   process: Deno.ChildProcess;
@@ -145,7 +149,7 @@ await Promise.all([
     for (let i = 0; i < NUM_RELAY_WORKERS; i++) {
       const service = startService("relay-worker", i + 1, true);
       services.push(service);
-      await new Promise((resolve) => setTimeout(resolve, 50)); // Stagger startups
+      await new Promise((resolve) => setTimeout(resolve, 100)); // Stagger startups
 
       // Report progress
       if ((i + 1) % reportInterval === 0 || i === NUM_RELAY_WORKERS - 1) {
@@ -161,7 +165,7 @@ await Promise.all([
     for (let i = 0; i < NUM_STORAGE_WORKERS; i++) {
       const service = startService("storage-worker", i + 1, true);
       services.push(service);
-      await new Promise((resolve) => setTimeout(resolve, 50)); // Stagger startups
+      await new Promise((resolve) => setTimeout(resolve, 100)); // Stagger startups
 
       // Report progress
       if ((i + 1) % reportInterval === 0 || i === NUM_STORAGE_WORKERS - 1) {
@@ -172,6 +176,12 @@ await Promise.all([
     }
     console.log(`✅ All ${NUM_STORAGE_WORKERS} storage workers started`);
   })(),
+
+  // Start management worker (handles NIP-86 operations requiring OpenSearch access)
+  Promise.resolve().then(() => {
+    const managementService = startService("management-worker", 1);
+    services.push(managementService);
+  }),
 
   // Start server
   Promise.resolve().then(() => {

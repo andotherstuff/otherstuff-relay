@@ -63,8 +63,8 @@ const wasmInitialized = (async () => {
 // Initialize OpenSearchRelay
 const relay = new OpenSearchRelay(opensearch);
 
-// Initialize relay management
-const management = new RelayManagement(redis);
+// Initialize relay management with relay for ban enforcement
+const management = new RelayManagement(redis, relay);
 
 const WORKER_ID = crypto.randomUUID().slice(0, 8);
 
