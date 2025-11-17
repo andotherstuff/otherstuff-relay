@@ -80,10 +80,17 @@ export function validateAuthEvent(
 
   // 4. Check 'u' tag matches URL exactly
   const uTag = event.tags.find((tag) => tag[0] === "u");
-  if (!uTag || uTag[1] !== url) {
+  try {
+    if (!uTag || new URL(uTag[1]).href !== new URL(url).href) {
+      return {
+        valid: false,
+        error: "URL in 'u' tag does not match request URL",
+      };
+    }
+  } catch {
     return {
       valid: false,
-      error: "URL in 'u' tag does not match request URL",
+      error: "Invalid URL in 'u' tag",
     };
   }
 
