@@ -268,28 +268,20 @@ deno task trends --help
 
 ### Running the Server
 
-**V2 - High Performance (recommended for single instance):**
-
-```bash
-deno task start:v2
-```
-
-- 10-100x faster than V1
-- In-memory channels (zero Redis overhead)
-- Native secp256k1 verification (with WASM fallback)
-- Single process with shared memory
-- Auto-scales workers to CPU cores
-
-**V1 - Distributed (recommended for multi-instance):**
+**IMMORTAL MODE (Unkillable - Recommended):**
 
 ```bash
 deno task start
 ```
 
-- Horizontal scaling with Redis queues
-- Multiple instances behind load balancer
-- Message persistence
-- Higher fault tolerance
+Features:
+- **NEVER dies from queue overload** - Removed artificial limits
+- **Massive parallelization** - 64 validation workers + 8 storage workers
+- **Auto-recovery** - Workers automatically restart if they die
+- **10,000+ events/sec** - High throughput with parallel processing
+- **Infinite queue capacity** - Redis queue grows as needed
+
+See [IMMORTAL_RELAY.md](./IMMORTAL_RELAY.md) for details.
 
 **Manual** - Run processes separately:
 

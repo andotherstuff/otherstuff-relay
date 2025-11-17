@@ -427,51 +427,6 @@ app.get("/", async (c) => {
   socket.onmessage = async (e) => {
     localMetrics.messagesReceived++;
     try {
-      // Check queue length before pushing
-      const queueLength = await redis.lLen("nostr:relay:queue");
-      if (queueLength > 1000) {
-        console.warn(
-          `Queue length exceeded (${queueLength}), closing connection ${connId}`,
-        );
-
-        send(["NOTICE", "relay is overloaded, please try again later"]);
-
-        // Parse the message to determine appropriate response
-        try {
-          const msg = JSON.parse(e.data) as unknown;
-          if (Array.isArray(msg) && msg.length > 0) {
-            const verb = msg[0];
-            if (verb === "EVENT") {
-              // Return false OK for EVENT messages
-              const eventId = msg[1]?.id;
-              if (eventId) {
-                send([
-                  "OK",
-                  eventId,
-                  false,
-                  "error: relay is overloaded, please try again later",
-                ]);
-              }
-            } else if (verb === "REQ") {
-              // Return CLOSED for REQ messages
-              const subId = msg[1];
-              if (subId) {
-                send([
-                  "CLOSED",
-                  subId,
-                  "error: relay is overloaded, please try again later",
-                ]);
-              }
-            }
-          }
-        } catch {
-          // fallthrough
-        }
-
-        socket.close();
-        return;
-      }
-
       // Queue the raw message for relay workers to process
       // Don't parse or validate here - let workers do that in parallel
       await redis.lPush(

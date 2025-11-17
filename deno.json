@@ -1,11 +1,9 @@
 {
   "tasks": {
-    "start": "deno run -A --env-file scripts/start-v2.ts",
-    "start:v2": "deno run -A --env-file scripts/start-v2.ts",
+    "start": "deno run -A --env-file scripts/start.ts",
     "test": "deno test -A --env-file=.env.test",
     "migrate": "deno run -A --env-file scripts/migrate.ts",
-    "demo:pubsub": "deno run -A --env-file examples/pubsub-demo.ts",
-    "benchmark": "deno run -A --env-file examples/benchmark-channels.ts"
+    "demo:pubsub": "deno run -A --env-file examples/pubsub-demo.ts"
   },
   "imports": {
     "@/": "./",

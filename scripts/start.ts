@@ -37,9 +37,9 @@ await relay.migrate();
 
 // Number of worker instances to run
 const NUM_STORAGE_WORKERS = parseInt(
-  Deno.env.get("NUM_STORAGE_WORKERS") || "2",
+  Deno.env.get("NUM_STORAGE_WORKERS") || "8",
 );
-const NUM_RELAY_WORKERS = parseInt(Deno.env.get("NUM_RELAY_WORKERS") || "4");
+const NUM_RELAY_WORKERS = parseInt(Deno.env.get("NUM_RELAY_WORKERS") || "64");
 const RESTART_DELAY_MS = parseInt(Deno.env.get("RESTART_DELAY_MS") || "1000");
 
 console.log(
