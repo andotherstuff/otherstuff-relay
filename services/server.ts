@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { cors } from "hono/cors";
 import { createClient as createRedisClient, type RedisClientType } from "redis";
 import { Config } from "@/lib/config.ts";
 import {
@@ -147,7 +148,7 @@ app.get("/health", async (c) => {
 });
 
 // NIP-86 Management API endpoint
-app.post("/", async (c) => {
+app.post("/", cors(), async (c) => {
   const contentType = c.req.header("content-type");
 
   // Only handle management API requests
