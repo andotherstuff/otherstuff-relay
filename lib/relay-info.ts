@@ -86,7 +86,7 @@ export async function getRelayInformation(
     fees: staticInfo.fees,
 
     // Software information
-    software: "https://github.com/lez/otherstuff-relay",
+    software: "https://github.com/andotherstuff/otherstuff-relay",
     version: "1.0.0",
 
     // Supported NIPs

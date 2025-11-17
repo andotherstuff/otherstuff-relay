@@ -136,7 +136,10 @@ Deno.test("getRelayInformation - CORS headers not in response", async () => {
   // The function returns the info object, not HTTP headers
   // Headers are added by the server endpoint
   assertEquals(typeof info, "object");
-  assertEquals(info.software, "https://github.com/lez/otherstuff-relay");
+  assertEquals(
+    info.software,
+    "https://github.com/andotherstuff/otherstuff-relay",
+  );
 
   await cleanup(redis);
 });
