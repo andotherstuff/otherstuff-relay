@@ -6,10 +6,11 @@ import { NSchema as n } from "@nostrify/nostrify";
 import { setNostrWasm, verifyEvent } from "nostr-tools/wasm";
 import { initNostrWasm } from "nostr-wasm";
 import { Client } from "@opensearch-project/opensearch";
-import { createClient as createRedisClient } from "redis";
+import { createClient as createRedisClient, type RedisClientType } from "redis";
 import { Config } from "@/lib/config.ts";
 import { getMetricsInstance, initializeMetrics } from "@/lib/metrics.ts";
 import { OpenSearchRelay } from "@/lib/opensearch.ts";
+import { RelayManagement } from "@/lib/management.ts";
 import type {
   NostrEvent,
   NostrFilter,
@@ -42,7 +43,7 @@ if (config.opensearchUsername && config.opensearchPassword) {
 const opensearch = new Client(opensearchConfig);
 
 // Redis client
-const redis = createRedisClient({
+const redis: RedisClientType = createRedisClient({
   url: config.redisUrl,
 });
 await redis.connect();
@@ -61,6 +62,9 @@ const wasmInitialized = (async () => {
 
 // Initialize OpenSearchRelay
 const relay = new OpenSearchRelay(opensearch);
+
+// Initialize relay management
+const management = new RelayManagement(redis);
 
 const WORKER_ID = crypto.randomUUID().slice(0, 8);
 
@@ -89,6 +93,54 @@ async function handleEvent(
 
   // Increment events by kind counter
   await metrics.incrementEventByKind(event.kind);
+
+  // NIP-86: Check if pubkey is banned
+  if (await management.isPubkeyBanned(event.pubkey)) {
+    await metrics.incrementEventsRejected();
+    await sendResponse(connId, [
+      "OK",
+      event.id,
+      false,
+      "blocked: pubkey is banned",
+    ]);
+    return;
+  }
+
+  // NIP-86: Check if pubkey is in allowlist (if allowlist is configured)
+  if (!(await management.isPubkeyAllowed(event.pubkey))) {
+    await metrics.incrementEventsRejected();
+    await sendResponse(connId, [
+      "OK",
+      event.id,
+      false,
+      "blocked: pubkey not in allowlist",
+    ]);
+    return;
+  }
+
+  // NIP-86: Check if event is banned
+  if (await management.isEventBanned(event.id)) {
+    await metrics.incrementEventsRejected();
+    await sendResponse(connId, [
+      "OK",
+      event.id,
+      false,
+      "blocked: event is banned",
+    ]);
+    return;
+  }
+
+  // NIP-86: Check if kind is allowed (if allowlist is configured)
+  if (!(await management.isKindAllowed(event.kind))) {
+    await metrics.incrementEventsRejected();
+    await sendResponse(connId, [
+      "OK",
+      event.id,
+      false,
+      "blocked: event kind not allowed",
+    ]);
+    return;
+  }
 
   // Validate event
   await wasmInitialized;

@@ -72,8 +72,11 @@ This architecture solves the validation bottleneck by:
 
 - **NIP-01**: Basic protocol flow, event validation, and filtering
 - **NIP-09**: Event deletion requests (kind 5 events)
+- **NIP-11**: Relay information document
 - **NIP-50**: Full-text search with advanced sort modes (hot, top,
   controversial, rising)
+- **NIP-86**: Relay management API with NIP-98 authentication
+- **NIP-98**: HTTP authentication for management API
 
 ### Performance
 
@@ -343,6 +346,39 @@ The index is automatically created by running `deno task migrate`.
 - **Protocol**: Nostr WebSocket protocol
 - **Purpose**: Real-time event streaming and client communication
 
+### Relay Information (NIP-11)
+
+- **URL**: `GET /`
+- **Headers**: `Accept: application/nostr+json`
+- **Response**: JSON object with relay capabilities and metadata
+- **Purpose**: Inform clients about relay features, limitations, and policies
+
+Example:
+
+```bash
+curl -H "Accept: application/nostr+json" http://localhost:8000/
+```
+
+Response includes:
+
+- Relay name, description, and contact info
+- Supported NIPs
+- Server limitations (max message size, subscriptions, etc.)
+- Event retention policies
+- Whether writes are restricted (allowlist/banlist active)
+
+### Management API (NIP-86)
+
+- **URL**: `POST /`
+- **Headers**:
+  - `Content-Type: application/nostr+json+rpc`
+  - `Authorization: Nostr <base64-encoded-auth-event>`
+- **Purpose**: Remote relay administration (ban/allow pubkeys, events, kinds,
+  etc.)
+- **Auth**: Requires NIP-98 authentication with admin pubkey
+
+See [Admin Guide](./docs/ADMIN_GUIDE.md) for details.
+
 ### Health Check
 
 - **URL**: `GET /health`
@@ -441,6 +477,143 @@ is handled automatically and transparently:
 - Deleted events are prevented from being re-inserted
 - The relay continues to broadcast deletion events to help propagate deletions
 
+## NIP-86 Relay Management API
+
+This relay implements NIP-86 for remote relay management via an authenticated
+HTTP API. Administrators can ban/allow pubkeys, events, kinds, and IPs, as well
+as configure relay metadata.
+
+### Configuration
+
+Set admin pubkeys in your `.env` file:
+
+```bash
+# Comma-separated list of admin pubkeys (hex format)
+ADMIN_PUBKEYS=pubkey1,pubkey2,pubkey3
+
+# Optional: Set initial relay metadata
+RELAY_NAME=My Nostr Relay
+RELAY_DESCRIPTION=A high-performance relay
+RELAY_ICON=https://example.com/icon.png
+```
+
+### Authentication
+
+All management API requests require NIP-98 HTTP authentication:
+
+1. Create a kind 27235 event with:
+   - `u` tag: Full relay URL (e.g., `http://localhost:8000/`)
+   - `method` tag: `POST`
+   - `payload` tag: SHA256 hash of request body (hex)
+2. Base64 encode the event
+3. Send in `Authorization: Nostr <base64-event>` header
+4. Your pubkey must be in the `ADMIN_PUBKEYS` list
+
+### Supported Methods
+
+**Pubkey Management:**
+
+- `banpubkey` - Ban a pubkey from publishing events
+- `listbannedpubkeys` - List all banned pubkeys
+- `allowpubkey` - Add pubkey to allowlist (optional feature)
+- `listallowedpubkeys` - List allowlisted pubkeys
+
+**Event Management:**
+
+- `banevent` - Ban a specific event by ID
+- `allowevent` - Remove event from ban list
+- `listbannedevents` - List all banned events
+
+**Kind Filtering:**
+
+- `allowkind` - Add kind to allowlist
+- `disallowkind` - Remove kind from allowlist
+- `listallowedkinds` - List allowed kinds
+
+**IP Blocking:**
+
+- `blockip` - Block an IP address
+- `unblockip` - Remove IP from blocklist
+- `listblockedips` - List blocked IPs
+
+**Relay Metadata:**
+
+- `changerelayname` - Update relay name
+- `changerelaydescription` - Update relay description
+- `changerelayicon` - Update relay icon URL
+
+**Discovery:**
+
+- `supportedmethods` - List all supported methods
+
+### Example Usage
+
+Using `curl` and `nostr-tools`:
+
+```javascript
+import { finalizeEvent, generateSecretKey } from "nostr-tools";
+import { createHash } from "crypto";
+
+const sk = generateSecretKey();
+const body = JSON.stringify({
+  method: "banpubkey",
+  params: ["<pubkey-to-ban>", "spam"],
+});
+
+const authEvent = finalizeEvent({
+  kind: 27235,
+  created_at: Math.floor(Date.now() / 1000),
+  tags: [
+    ["u", "http://localhost:8000/"],
+    ["method", "POST"],
+    ["payload", createHash("sha256").update(body).digest("hex")],
+  ],
+  content: "",
+}, sk);
+
+const response = await fetch("http://localhost:8000/", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/nostr+json+rpc",
+    "Authorization": `Nostr ${btoa(JSON.stringify(authEvent))}`,
+  },
+  body,
+});
+
+const result = await response.json();
+console.log(result); // { result: true }
+```
+
+### How Filtering Works
+
+**Banlists (Blocklists):**
+
+- Events from banned pubkeys are rejected
+- Banned events cannot be inserted
+- Banned IPs cannot connect (future feature)
+
+**Allowlists (Whitelists):**
+
+- If allowlist is **empty**, all pubkeys/kinds are allowed
+- If allowlist has entries, **only** those pubkeys/kinds are allowed
+- Useful for private/invite-only relays
+
+**Filter Priority:**
+
+1. Check banned pubkeys → reject if banned
+2. Check allowlist → reject if not in allowlist (when allowlist is configured)
+3. Check banned events → reject if banned
+4. Check allowed kinds → reject if not in allowlist (when allowlist is
+   configured)
+
+### Security Notes
+
+- Only pubkeys in `ADMIN_PUBKEYS` can access the management API
+- All requests must have valid NIP-98 authentication
+- Auth events must be within 60 seconds of current time
+- Payload hash is verified for POST requests
+- All management operations are logged with admin pubkey
+
 ## NIP-50 Search Extensions
 
 This relay implements advanced NIP-50 search extensions for discovering trending
@@ -465,6 +638,17 @@ and popular content.
 // Rising vegan content
 {"kinds": [1], "search": "sort:rising vegan", "limit": 50}
 ```
+
+## Documentation
+
+- **[NIP-86 & NIP-11 Implementation](./NIP86_IMPLEMENTATION.md)** - Technical
+  details of the NIP-86 and NIP-11 implementations
+- **[Admin Guide](./docs/ADMIN_GUIDE.md)** - How to manage your relay using the
+  NIP-86 API
+- **[NIP-86 Example Client](./examples/nip86-client.ts)** - Working example of a
+  NIP-86 management client
+- **[NIP-11 Query Script](./examples/nip11-query.sh)** - Simple script to query
+  relay information
 
 ## Development
 

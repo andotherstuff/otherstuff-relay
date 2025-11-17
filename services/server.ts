@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { createClient as createRedisClient } from "redis";
+import { createClient as createRedisClient, type RedisClientType } from "redis";
 import { Config } from "@/lib/config.ts";
 import {
   connectionsGauge,
@@ -9,12 +9,19 @@ import {
   register,
 } from "@/lib/metrics.ts";
 import type { NostrRelayMsg } from "@nostrify/nostrify";
+import {
+  extractAuthEvent,
+  isAuthorizedAdmin,
+  validateAuthEvent,
+} from "@/lib/auth.ts";
+import { RelayManagement } from "@/lib/management.ts";
+import { getRelayInformation } from "@/lib/relay-info.ts";
 
 // Instantiate config with Deno.env
 const config = new Config(Deno.env);
 
 // Instantiate Redis client for queueing messages
-const redis = createRedisClient({
+const redis: RedisClientType = createRedisClient({
   url: config.redisUrl,
 });
 
@@ -25,6 +32,20 @@ initializeMetrics(redis);
 
 // Get metrics instance for use in this module
 const metrics = getMetricsInstance();
+
+// Initialize relay management
+const management = new RelayManagement(redis);
+
+// Initialize relay metadata from config if provided
+if (config.relayName) {
+  await management.setRelayName(config.relayName);
+}
+if (config.relayDescription) {
+  await management.setRelayDescription(config.relayDescription);
+}
+if (config.relayIcon) {
+  await management.setRelayIcon(config.relayIcon);
+}
 
 // Local counters for batching metrics updates
 const localMetrics = {
@@ -87,9 +108,227 @@ app.get("/health", async (c) => {
   });
 });
 
-// WebSocket endpoint
-app.get("/", (c) => {
+// NIP-86 Management API endpoint
+app.post("/", async (c) => {
+  const contentType = c.req.header("content-type");
+
+  // Only handle management API requests
+  if (contentType !== "application/nostr+json+rpc") {
+    return c.text("Invalid Content-Type", 400);
+  }
+
+  // Extract and validate NIP-98 auth event
+  const authHeader = c.req.header("authorization");
+  const authEvent = extractAuthEvent(authHeader);
+
+  if (!authEvent) {
+    return c.json(
+      { error: "Missing or invalid Authorization header" },
+      401,
+    );
+  }
+
+  // Get request body for payload validation
+  const body = await c.req.text();
+
+  // Construct full URL including query params
+  const url = new URL(c.req.url).toString();
+
+  // Validate auth event
+  const validation = validateAuthEvent(authEvent, url, "POST", body);
+
+  if (!validation.valid) {
+    return c.json({ error: validation.error }, 401);
+  }
+
+  // Check if pubkey is authorized admin
+  if (!isAuthorizedAdmin(validation.pubkey!, config.adminPubkeys)) {
+    return c.json(
+      { error: "Unauthorized: not an admin pubkey" },
+      401,
+    );
+  }
+
+  // Parse JSON-RPC request
+  let request: { method: string; params?: unknown[] };
+  try {
+    request = JSON.parse(body);
+  } catch {
+    return c.json({ error: "Invalid JSON" }, 400);
+  }
+
+  if (!request.method) {
+    return c.json({ error: "Missing method" }, 400);
+  }
+
+  const params = request.params || [];
+
+  // Log management operation
+  console.log(
+    `[NIP-86] ${validation.pubkey} called ${request.method} with params:`,
+    params,
+  );
+
+  // Dispatch to appropriate method
+  try {
+    let result: unknown;
+
+    switch (request.method) {
+      case "supportedmethods":
+        result = management.getSupportedMethods();
+        break;
+
+      case "banpubkey":
+        if (typeof params[0] !== "string") {
+          return c.json({ error: "Invalid pubkey parameter" }, 400);
+        }
+        result = await management.banPubkey(
+          params[0],
+          params[1] as string | undefined,
+        );
+        break;
+
+      case "listbannedpubkeys":
+        result = await management.listBannedPubkeys();
+        break;
+
+      case "allowpubkey":
+        if (typeof params[0] !== "string") {
+          return c.json({ error: "Invalid pubkey parameter" }, 400);
+        }
+        result = await management.allowPubkey(
+          params[0],
+          params[1] as string | undefined,
+        );
+        break;
+
+      case "listallowedpubkeys":
+        result = await management.listAllowedPubkeys();
+        break;
+
+      case "banevent":
+        if (typeof params[0] !== "string") {
+          return c.json({ error: "Invalid event id parameter" }, 400);
+        }
+        result = await management.banEvent(
+          params[0],
+          params[1] as string | undefined,
+        );
+        break;
+
+      case "allowevent":
+        if (typeof params[0] !== "string") {
+          return c.json({ error: "Invalid event id parameter" }, 400);
+        }
+        result = await management.allowEvent(params[0]);
+        break;
+
+      case "listbannedevents":
+        result = await management.listBannedEvents();
+        break;
+
+      case "allowkind":
+        if (typeof params[0] !== "number") {
+          return c.json({ error: "Invalid kind parameter" }, 400);
+        }
+        result = await management.allowKind(params[0]);
+        break;
+
+      case "disallowkind":
+        if (typeof params[0] !== "number") {
+          return c.json({ error: "Invalid kind parameter" }, 400);
+        }
+        result = await management.disallowKind(params[0]);
+        break;
+
+      case "listallowedkinds":
+        result = await management.listAllowedKinds();
+        break;
+
+      case "blockip":
+        if (typeof params[0] !== "string") {
+          return c.json({ error: "Invalid IP parameter" }, 400);
+        }
+        result = await management.blockIP(
+          params[0],
+          params[1] as string | undefined,
+        );
+        break;
+
+      case "unblockip":
+        if (typeof params[0] !== "string") {
+          return c.json({ error: "Invalid IP parameter" }, 400);
+        }
+        result = await management.unblockIP(params[0]);
+        break;
+
+      case "listblockedips":
+        result = await management.listBlockedIPs();
+        break;
+
+      case "changerelayname":
+        if (typeof params[0] !== "string") {
+          return c.json({ error: "Invalid name parameter" }, 400);
+        }
+        result = await management.setRelayName(params[0]);
+        break;
+
+      case "changerelaydescription":
+        if (typeof params[0] !== "string") {
+          return c.json({ error: "Invalid description parameter" }, 400);
+        }
+        result = await management.setRelayDescription(params[0]);
+        break;
+
+      case "changerelayicon":
+        if (typeof params[0] !== "string") {
+          return c.json({ error: "Invalid icon parameter" }, 400);
+        }
+        result = await management.setRelayIcon(params[0]);
+        break;
+
+      default:
+        return c.json({ error: `Unknown method: ${request.method}` }, 400);
+    }
+
+    return c.json({ result });
+  } catch (err) {
+    console.error(`[NIP-86] Error executing ${request.method}:`, err);
+    return c.json(
+      {
+        error: `Internal error: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      },
+      500,
+    );
+  }
+});
+
+// NIP-11 Relay Information endpoint
+app.get("/", async (c) => {
+  const accept = c.req.header("accept");
   const upgrade = c.req.header("upgrade");
+
+  // NIP-11: Return relay information if Accept header is application/nostr+json
+  if (accept === "application/nostr+json") {
+    const info = await getRelayInformation(redis, {
+      name: config.relayName,
+      description: config.relayDescription,
+      icon: config.relayIcon,
+      pubkey: config.relayPubkey,
+      contact: config.relayContact,
+      banner: config.relayBanner,
+    });
+
+    return c.json(info, 200, {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Headers": "*",
+      "Access-Control-Allow-Methods": "GET",
+    });
+  }
+
+  // WebSocket upgrade
   if (upgrade !== "websocket") {
     return c.text("Use a Nostr client to connect", 400);
   }
