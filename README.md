@@ -11,6 +11,12 @@ power of OpenSearch to deliver a scalable Nostr infrastructure solution with
 native NIP-50 full-text search support. The architecture prioritizes
 performance, reliability, and operational simplicity.
 
+**Two architectures available:**
+- **V1 (Redis-based)**: Distributed architecture with Redis queues for horizontal scaling
+- **V2 (In-memory)**: High-performance single-instance with in-memory channels (**10-100x faster**)
+
+See [V1 vs V2 Comparison](./docs/V1_VS_V2.md) and [Performance Optimizations](./PERFORMANCE_OPTIMIZATIONS.md) for details.
+
 ## Architecture
 
 ![Architecture Diagram](./diagram.png)
@@ -262,17 +268,28 @@ deno task trends --help
 
 ### Running the Server
 
-**Simple (recommended)** - Run everything with one command:
+**V2 - High Performance (recommended for single instance):**
+
+```bash
+deno task start:v2
+```
+
+- 10-100x faster than V1
+- In-memory channels (zero Redis overhead)
+- Native secp256k1 verification (with WASM fallback)
+- Single process with shared memory
+- Auto-scales workers to CPU cores
+
+**V1 - Distributed (recommended for multi-instance):**
 
 ```bash
 deno task start
 ```
 
-This starts:
-
-- 1 web server (16 Deno instances via `deno serve`)
-- 16 relay workers (configurable via `NUM_RELAY_WORKERS` env var)
-- 2 storage workers (configurable via `NUM_STORAGE_WORKERS` env var)
+- Horizontal scaling with Redis queues
+- Multiple instances behind load balancer
+- Message persistence
+- Higher fault tolerance
 
 **Manual** - Run processes separately:
 
