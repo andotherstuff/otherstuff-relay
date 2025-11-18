@@ -94,6 +94,7 @@ export async function getRelayInformation(
       1, // Basic protocol flow
       9, // Event deletion
       11, // Relay information document
+      45, // Event counts
       50, // Full-text search
       86, // Relay management API
       98, // HTTP authentication

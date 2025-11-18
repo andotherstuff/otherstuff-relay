@@ -272,6 +272,36 @@ async function handleClose(connId: string, subId: string): Promise<void> {
   }
 }
 
+async function handleCount(
+  connId: string,
+  subId: string,
+  filters: NostrFilter[],
+): Promise<void> {
+  // Increment queries counter
+  await metrics.incrementQueriesTotal();
+
+  // Limit filters per count request
+  if (filters.length > 10) {
+    filters = filters.slice(0, 10);
+  }
+
+  try {
+    // Get count from relay
+    const result = await relay.count(filters);
+
+    // Send COUNT response
+    await sendResponse(connId, ["COUNT", subId, result]);
+  } catch (error) {
+    console.error("Count query failed:", error);
+    // Send CLOSED message on error as per NIP-45
+    await sendResponse(connId, [
+      "CLOSED",
+      subId,
+      "error: count query failed",
+    ]);
+  }
+}
+
 async function broadcastEvent(event: NostrEvent): Promise<void> {
   // Check if event is too old to broadcast (but not ephemeral)
   const ephemeral = isEphemeral(event.kind);
@@ -346,6 +376,12 @@ async function processMessages() {
             case "CLOSE": {
               const [_, subId] = parsed;
               await handleClose(connId, subId);
+              break;
+            }
+
+            case "COUNT": {
+              const [_, subId, ...filters] = parsed;
+              await handleCount(connId, subId, filters as NostrFilter[]);
               break;
             }
 
